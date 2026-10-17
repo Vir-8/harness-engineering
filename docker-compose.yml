@@ -1,0 +1,20 @@
+services:
+  db:
+    image: pgvector/pgvector:pg17   # Postgres 17 with the pgvector extension available
+    environment:
+      POSTGRES_USER: app            # dev-only credentials; Phase 10 moves real ones to Secrets Manager
+      POSTGRES_PASSWORD: app
+      POSTGRES_DB: refunds
+    ports:
+      - "5433:5432"                 # host 5433 -> container 5432 (avoids clashing with a local Postgres)
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro   # *.sql here runs ONCE, when the data volume is first created
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d refunds"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+volumes:
+  pgdata:

@@ -1,0 +1,31 @@
+[project]
+name = "refund-harness"
+version = "0.1.0"
+description = "Agent harness for an e-commerce support and refund agent (learning project)"
+readme = "README.md"
+authors = [
+    { name = "Vir Kothari", email = "virkothari8@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.143.3",
+    "psycopg[binary,pool]>=3.3.6",
+    "pydantic>=2.14.1",
+    "uvicorn[standard]>=0.54.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.30,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "ruff>=0.17.1",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
