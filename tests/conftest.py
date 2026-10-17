@@ -1,6 +1,7 @@
 import pytest
 from pydantic import BaseModel
 
+from refund_harness.db import create_pool
 from refund_harness.tools import Tool, ToolRegistry
 
 ORDERS = {"A100": "delivered 3 days ago"}
@@ -22,3 +23,9 @@ def make_registry() -> ToolRegistry:
 @pytest.fixture
 def registry():
     return make_registry()
+
+@pytest.fixture
+async def pool():
+    pool = await create_pool()
+    yield pool
+    await pool.close()

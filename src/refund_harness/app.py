@@ -1,7 +1,12 @@
 """HTTP layer. The agent logic lives elsewhere; this file only translates HTTP <-> harness."""
 
-from fastapi import Depends, FastAPI
+from contextlib import asynccontextmanager
+
+from fastapi import Depends, FastAPI, Header, Request
 from fastapi.responses import JSONResponse
+from psycopg_pool import AsyncConnectionPool
+
+from refund_harness.db import create_pool
 
 from .adapters.claude_cli import ClaudeCLIClient
 from .errors import ModelCallError, ModelTimeoutError, ReplyParseError
@@ -13,7 +18,13 @@ from .tools import ToolRegistry
 
 MAX_STEPS = 5
 
-app = FastAPI(title="Refund agent")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    app.state.pool = await create_pool()
+    yield
+    await app.state.pool.close()
+
+app = FastAPI(title="Refund agent", lifespan=lifespan)
 
 
 # Dependencies: endpoints ask for these with Depends(...), so tests can swap them out.
@@ -21,8 +32,19 @@ def get_llm() -> LLMClient:
     return ClaudeCLIClient()
 
 
-def get_registry() -> ToolRegistry:
-    return build_registry()
+def get_pool(request: Request) -> AsyncConnectionPool:
+    return request.app.state.pool
+
+
+def get_merchant_id(x_merchant_id: str = Header(min_length=1)) -> str:
+    return x_merchant_id
+
+
+def get_registry(
+    pool: AsyncConnectionPool = Depends(get_pool),
+    merchant_id: str = Depends(get_merchant_id)
+) -> ToolRegistry:
+    return build_registry(pool=pool, merchant_id=merchant_id)
 
 
 @app.get("/health")
