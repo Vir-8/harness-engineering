@@ -1,6 +1,8 @@
 import pytest
 
 from refund_harness.app import app, get_llm
+from refund_harness.embedder import FakeEmbedder
+from refund_harness.ingest import embed_missing_chunks
 from refund_harness.errors import ModelCallError, ModelTimeoutError, ReplyParseError
 from refund_harness.llm import FakeLLM, RaisingLLM
 from refund_harness.types import LLMResponse, ToolCall
@@ -126,3 +128,19 @@ async def test_empty_merchant_header_returns_422(client):
 
     assert r.status_code == 422
     assert fake.calls == []
+
+
+async def test_the_model_is_shown_the_merchants_retrieved_policy_text(client, pool, sandbox):
+    await embed_missing_chunks(pool, FakeEmbedder(), merchant_id=sandbox)
+    fake = FakeLLM([
+        LLMResponse(tool_calls=[ToolCall(id="c1", name="search_policy", arguments={"question": "gift cards final sale"})]),
+        LLMResponse(text="done"),
+    ])
+    app.dependency_overrides[get_llm] = lambda: fake
+
+    r = await client.post(
+        "/refund-agent/ask", json={"question": "Can I refund a gift card?"}, headers={"X-Merchant-Id": sandbox}
+    )
+
+    assert r.status_code == 200
+    assert "Gift cards are final sale." in fake.calls[1][-1].content  # the retrieved chunk reached the model

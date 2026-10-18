@@ -6,10 +6,15 @@ from typing import Callable
 from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel, Field
 
-from .repository import RefundOutcome, SubmitRefundResult, get_order_row, submit_refund
+from .embedder import Embedder
+from .repository import RefundOutcome, SubmitRefundResult, get_order_row, search_policy_by_vector, submit_refund
 from .tools import Tool, ToolRegistry
 
-POLICY = "Refunds are allowed within 30 days of delivery. Orders not yet delivered can be cancelled, not refunded."
+# Policy chunks farther than this (cosine distance) from the question are treated as "not about this".
+# Measured with scripts/compare_search.py on gemini-embedding-2 (768 dims): on-topic best matches were 0.20-0.39,
+# unrelated questions' best matches 0.42-0.45. The gap is thin and the sample was 8 questions: re-measure with real evals.
+MAX_POLICY_DISTANCE = 0.41
+POLICY_CHUNKS_SHOWN = 3
 
 
 class OrderArgs(BaseModel):
@@ -21,12 +26,8 @@ class RefundArgs(BaseModel):
     amount_cents: int = Field(gt=0, description="Refund amount in CENTS (5900 means $59.00), not dollars.")
 
 
-class NoArgs(BaseModel):
-    pass
-
-
-async def get_refund_policy(args: NoArgs) -> str:
-    return POLICY
+class SearchPolicyArgs(BaseModel):
+    question: str = Field(min_length=2, max_length=500, description="What the customer wants to know, in plain words.")
 
 
 def _utc_now() -> datetime:
@@ -34,7 +35,7 @@ def _utc_now() -> datetime:
 
 
 def build_registry(
-    pool: AsyncConnectionPool, merchant_id: str, now: Callable[[], datetime] = _utc_now
+    pool: AsyncConnectionPool, merchant_id: str, embedder: Embedder, now: Callable[[], datetime] = _utc_now
 ) -> ToolRegistry:
     """`now` is the clock: the real one in production, a fixed one in tests."""
 
@@ -44,6 +45,11 @@ def build_registry(
             return order_not_found_text(args.order_id)
         return format_order(args.order_id, row, now())
 
+    async def search_policy(args: SearchPolicyArgs) -> str:
+        question_vector = await embedder.embed_query(args.question)
+        chunks = await search_policy_by_vector(pool, merchant_id, question_vector, POLICY_CHUNKS_SHOWN)
+        return format_policy_results(chunks)
+
     async def submit_order_refund(args: RefundArgs) -> str:
         async with pool.connection() as conn:
             result = await submit_refund(conn, merchant_id, args.order_id, args.amount_cents, now())
@@ -51,7 +57,13 @@ def build_registry(
 
     return ToolRegistry([
         Tool("get_order", "Look up an order by id.", OrderArgs, get_order),
-        Tool("get_refund_policy", "Return the refund policy text.", NoArgs, get_refund_policy),
+        Tool(
+            "search_policy",
+            "Search this merchant's refund and return policy for the passages that answer a customer's question. "
+            "Use it before stating any policy; never guess a policy from memory.",
+            SearchPolicyArgs,
+            search_policy,
+        ),
         Tool(
             "submit_order_refund",
             "Submit a refund request for an order. This only REQUESTS the refund: it stays pending until a human approves it.",
@@ -59,6 +71,17 @@ def build_registry(
             submit_order_refund,
         ),
     ])
+
+
+def format_policy_results(chunks: list[dict], max_distance: float = MAX_POLICY_DISTANCE) -> str:
+    """What the model reads after a policy search. `chunks` come closest-first, each with a `distance`."""
+    relevant = [c for c in chunks if c["distance"] <= max_distance]
+    if not relevant:
+        return (
+            "No policy text clearly matches that question. Do not guess the policy: "
+            "tell the customer you cannot confirm it, or try searching again with different words."
+        )
+    return "\n\n".join(f"{c['title']}\n{c['body']}" for c in relevant)
 
 
 def order_not_found_text(order_id: str) -> str:

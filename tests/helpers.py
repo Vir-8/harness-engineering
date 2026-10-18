@@ -18,6 +18,16 @@ GLOBEX = "globex"
 A100_TOTAL_CENTS = 5900
 DAY = timedelta(days=1)
 
+# A throwaway merchant for tests that write policy chunks or embeddings. It never touches the seed merchants,
+# whose embeddings come from the real Gemini model and cost money to recreate.
+SANDBOX = "ingest-sandbox"
+SANDBOX_CHUNKS = [
+    ("Return window", "Items may be returned within 30 days."),
+    ("Gift cards", "Gift cards are final sale."),
+    ("Cancellations", "Unshipped orders can be cancelled."),
+    ("Secret", "zebra unicorn rainbow"),  # words no real merchant uses: proves nothing leaks across merchants
+]
+
 
 async def moment_after_delivery(pool: AsyncConnectionPool, after: timedelta) -> datetime:
     """A fixed instant `after` acme's A100 was delivered.

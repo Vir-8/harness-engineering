@@ -1,6 +1,7 @@
 """HTTP layer. The agent logic lives elsewhere; this file only translates HTTP <-> harness."""
 
 from contextlib import asynccontextmanager
+from functools import lru_cache
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Path, Request
 from fastapi.responses import JSONResponse
@@ -9,6 +10,8 @@ from psycopg_pool import AsyncConnectionPool
 from refund_harness.db import create_pool
 
 from .adapters.claude_cli import ClaudeCLIClient
+from .adapters.gemini_embeddings import GeminiEmbedder
+from .embedder import Embedder
 from .errors import ModelCallError, ModelTimeoutError, ReplyParseError
 from .llm import LLMClient
 from .loop import run_agent
@@ -33,6 +36,15 @@ def get_llm() -> LLMClient:
     return ClaudeCLIClient()
 
 
+@lru_cache
+def _gemini_embedder() -> GeminiEmbedder:
+    return GeminiEmbedder()  # one shared instance, so one SDK client for the whole process
+
+
+def get_embedder() -> Embedder:
+    return _gemini_embedder()
+
+
 def get_pool(request: Request) -> AsyncConnectionPool:
     return request.app.state.pool
 
@@ -48,9 +60,10 @@ def get_reviewer_id(x_reviewer_id: str = Header(min_length=1)) -> str:
 
 def get_registry(
     pool: AsyncConnectionPool = Depends(get_pool),
-    merchant_id: str = Depends(get_merchant_id)
+    merchant_id: str = Depends(get_merchant_id),
+    embedder: Embedder = Depends(get_embedder),
 ) -> ToolRegistry:
-    return build_registry(pool=pool, merchant_id=merchant_id)
+    return build_registry(pool=pool, merchant_id=merchant_id, embedder=embedder)
 
 
 @app.get("/health")

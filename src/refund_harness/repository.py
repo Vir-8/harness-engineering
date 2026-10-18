@@ -23,6 +23,11 @@ class SubmitRefundResult:
     reasons: tuple[str, ...] = ()  # set only when INELIGIBLE
 
 
+def to_vector_literal(vector: list[float]) -> str:
+    """pgvector's text form, e.g. '[0.1,0.2]'. Send it with a `%s::vector` cast so Postgres converts it."""
+    return "[" + ",".join(str(x) for x in vector) + "]"
+
+
 async def get_order_row(pool: AsyncConnectionPool, merchant_id: str, order_id: str) -> dict | None:
     async with pool.connection() as conn:
         cur = await conn.execute(
@@ -119,3 +124,37 @@ async def submit_refund(
         if order_refund_id is None:
             return SubmitRefundResult(RefundOutcome.DUPLICATE)
         return SubmitRefundResult(RefundOutcome.CREATED, refund_id=order_refund_id)
+
+
+async def search_policy_keyword(pool: AsyncConnectionPool, merchant_id, query, limit=3) -> list[dict]:
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            "SELECT title, body, ts_rank(tsv, query) AS rank " \
+            "FROM policy_chunks, websearch_to_tsquery('english', %s) AS query " \
+            "WHERE merchant_id = %s AND tsv @@ query " \
+            "ORDER BY rank DESC " \
+            "LIMIT %s",
+            (query, merchant_id, limit)
+        )
+        result = await cur.fetchall()
+        return result
+
+
+async def search_policy_by_vector(
+    pool: AsyncConnectionPool, merchant_id: str, query_vector: list[float], limit: int = 3
+) -> list[dict]:
+    """The merchant's policy chunks nearest in meaning to `query_vector`, closest first.
+
+    `distance` is cosine distance: 0 means the same direction, larger means less related (it can reach 2).
+    It always returns the nearest `limit` chunks, however unrelated: judging relevance is the caller's job.
+    """
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            "SELECT title, body, embedding <=> %s::vector AS distance "
+            "FROM policy_chunks "
+            "WHERE merchant_id = %s AND embedding IS NOT NULL "
+            "ORDER BY distance "
+            "LIMIT %s",
+            (to_vector_literal(query_vector), merchant_id, limit),
+        )
+        return await cur.fetchall()
