@@ -3,9 +3,8 @@
 import asyncio
 
 import pytest
-from psycopg.errors import NotNullViolation
-
 from helpers import A100_TOTAL_CENTS, ACME, GLOBEX, approve, request
+from psycopg.errors import NotNullViolation
 
 
 async def pending_refund(pool) -> int:

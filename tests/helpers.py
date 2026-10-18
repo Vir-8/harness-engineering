@@ -11,7 +11,12 @@ from typing import Callable
 
 from psycopg_pool import AsyncConnectionPool
 
-from refund_harness.repository import approve_refund, get_order_row, request_refund, submit_refund
+from refund_harness.repository import (
+    approve_refund,
+    get_order_row,
+    request_refund,
+    submit_refund,
+)
 
 ACME = "acme"
 GLOBEX = "globex"

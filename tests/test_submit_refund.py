@@ -6,6 +6,7 @@ It returns a SubmitRefundResult whose `outcome` is one of: CREATED, DUPLICATE, I
 import asyncio
 
 from helpers import A100_TOTAL_CENTS, ACME, DAY, GLOBEX, moment_after_delivery, submit
+
 from refund_harness.repository import RefundOutcome
 
 
@@ -79,3 +80,28 @@ async def test_another_merchants_order_is_not_found(pool, refunds):
 
     assert result.outcome == RefundOutcome.ORDER_NOT_FOUND
     assert await refunds.count() == 0
+
+
+async def test_submission_waits_while_someone_else_is_changing_the_order(pool, refunds):
+    """submit_refund locks the order row (FOR UPDATE), so a change to the order can't slip in between its check and its insert.
+
+    The other connection takes the lock an ordinary UPDATE of the order takes (FOR NO KEY UPDATE). It is the right
+    lock for this test: it conflicts with FOR UPDATE but NOT with the foreign-key check that the refund insert does
+    anyway, so the submission only waits if submit_refund really asked for FOR UPDATE.
+    """
+    now = await moment_after_delivery(pool, 3 * DAY)
+
+    async with pool.connection() as other_connection:
+        await other_connection.execute(
+            "SELECT 1 FROM orders WHERE merchant_id = %s AND id = 'A100' FOR NO KEY UPDATE", (ACME,)
+        )
+        submission = asyncio.create_task(submit(pool, ACME, "A100", A100_TOTAL_CENTS, now))
+
+        finished, _ = await asyncio.wait({submission}, timeout=0.5)
+
+        assert not finished  # still waiting for the other transaction
+        assert await refunds.count() == 0
+    # leaving the block ends the other transaction and releases the lock
+
+    result = await asyncio.wait_for(submission, timeout=5)
+    assert result.outcome == RefundOutcome.CREATED

@@ -6,8 +6,8 @@ A request counts as "live" unless it was rejected (the partial unique index in d
 import asyncio
 
 import pytest
-
 from helpers import A100_TOTAL_CENTS, ACME, request
+
 from refund_harness.repository import request_refund
 
 

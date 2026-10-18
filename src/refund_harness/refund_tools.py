@@ -7,7 +7,13 @@ from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel, Field
 
 from .embedder import Embedder
-from .repository import RefundOutcome, SubmitRefundResult, get_order_row, search_policy_by_vector, submit_refund
+from .repository import (
+    RefundOutcome,
+    SubmitRefundResult,
+    get_order_row,
+    search_policy_by_vector,
+    submit_refund,
+)
 from .tools import Tool, ToolRegistry
 
 # Policy chunks farther than this (cosine distance) from the question are treated as "not about this".

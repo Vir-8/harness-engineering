@@ -5,8 +5,8 @@ Seed data (db/init/06): acme's return window is 30 days, globex's is 14. Both ha
 """
 
 import pytest
-
 from helpers import ACME, GLOBEX
+
 from refund_harness.repository import search_policy_keyword
 
 

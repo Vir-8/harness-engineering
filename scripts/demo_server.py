@@ -1,4 +1,7 @@
-"""Throwaway server for the blocking experiment. Not part of the real app."""
+"""Throwaway server for the blocking experiment. Not part of the real app.
+
+The fake model never asks for a tool, so the harness runs here with an empty tool registry and no database.
+"""
 
 import asyncio
 import time
@@ -7,7 +10,7 @@ from fastapi import FastAPI
 
 from refund_harness.llm import LLMResponse
 from refund_harness.loop import run_agent
-from refund_harness.refund_tools import build_registry
+from refund_harness.tools import ToolRegistry
 
 app = FastAPI()
 WORK_SECONDS = 2
@@ -48,12 +51,12 @@ def sync_def_sleep():  # note: plain `def`, not `async def`
 @app.get("/harness-test-asyncio")
 async def harness_test_asyncio():
     llm = FakeTimeLLM(True)
-    await run_agent(llm, build_registry(), "what?")
+    await run_agent(llm, ToolRegistry([]), "what?")
     return {"done": True}
 
 
 @app.get("/harness-test-time")
 async def harness_test_time():
     llm = FakeTimeLLM(False)
-    await run_agent(llm, build_registry(), "what?")
+    await run_agent(llm, ToolRegistry([]), "what?")
     return {"done": True}

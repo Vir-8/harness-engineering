@@ -6,8 +6,8 @@ Every test works on the throwaway `sandbox` merchant (see conftest), so the seed
 import json
 
 import pytest
-
 from helpers import SANDBOX_CHUNKS
+
 from refund_harness.embedder import Document, FakeEmbedder
 from refund_harness.ingest import embed_missing_chunks
 

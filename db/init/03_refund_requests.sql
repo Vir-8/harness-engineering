@@ -1,4 +1,5 @@
--- A refund the agent (or a human) has asked for. Deliberately has NO uniqueness rule yet: see Phase 2b.
+-- A refund the agent (or a human) has asked for. At most one live (non-rejected) request per order is
+-- enforced by the partial unique index in 04_refund_unique.sql.
 CREATE TABLE refund_requests (
     id           BIGINT      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     merchant_id  TEXT        NOT NULL,

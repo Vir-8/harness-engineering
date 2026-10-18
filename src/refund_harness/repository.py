@@ -1,4 +1,3 @@
-import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
@@ -36,15 +35,6 @@ async def get_order_row(pool: AsyncConnectionPool, merchant_id: str, order_id: s
         )
         row = await cur.fetchone()
         return row
-
-
-async def get_order_refund_id(conn: AsyncConnection, merchant_id: str, order_id: str) -> str:
-    cur = await conn.execute(
-        "SELECT id FROM refund_requests WHERE merchant_id = %s AND order_id = %s",
-        (merchant_id, order_id)
-    )
-    row = await cur.fetchone()
-    return row["id"]
 
 
 async def request_refund(conn: AsyncConnection, merchant_id: str, order_id: str, amount_cents: int) -> int | None:

@@ -2,8 +2,8 @@ import pytest
 
 from refund_harness.app import app, get_llm
 from refund_harness.embedder import FakeEmbedder
-from refund_harness.ingest import embed_missing_chunks
 from refund_harness.errors import ModelCallError, ModelTimeoutError, ReplyParseError
+from refund_harness.ingest import embed_missing_chunks
 from refund_harness.llm import FakeLLM, RaisingLLM
 from refund_harness.types import LLMResponse, ToolCall
 

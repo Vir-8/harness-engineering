@@ -1,11 +1,23 @@
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from helpers import (
+    A100_TOTAL_CENTS,
+    ACME,
+    DAY,
+    GLOBEX,
+    fixed_clock,
+    moment_after_delivery,
+)
 from pydantic import ValidationError
 
-from helpers import A100_TOTAL_CENTS, ACME, DAY, GLOBEX, SANDBOX, fixed_clock, moment_after_delivery
 from refund_harness.embedder import FakeEmbedder
-from refund_harness.refund_tools import build_registry, format_order, format_policy_results, format_refund_result
+from refund_harness.refund_tools import (
+    build_registry,
+    format_order,
+    format_policy_results,
+    format_refund_result,
+)
 from refund_harness.repository import RefundOutcome, SubmitRefundResult
 
 NOW = datetime(2026, 10, 17, 12, 0, tzinfo=timezone.utc)  # fixed clock: results never depend on today's date

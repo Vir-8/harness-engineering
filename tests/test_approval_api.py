@@ -5,7 +5,6 @@ Anything that is not "a pending refund of this merchant" gets the same 404.
 """
 
 import pytest
-
 from helpers import A100_TOTAL_CENTS, ACME, GLOBEX, request
 
 REVIEWER = {"X-Reviewer-Id": "reviewer-1"}

@@ -13,7 +13,11 @@ from google import genai
 from google.genai import errors as genai_errors
 from google.genai import types
 
-from refund_harness.adapters.gemini_embeddings import GeminiEmbedder, document_prompt, query_prompt
+from refund_harness.adapters.gemini_embeddings import (
+    GeminiEmbedder,
+    document_prompt,
+    query_prompt,
+)
 from refund_harness.embedder import EMBEDDING_DIMENSIONS, Document
 from refund_harness.errors import ModelCallError, ModelTimeoutError, ReplyParseError
 
