@@ -1,19 +1,9 @@
-import httpx
 import pytest
 
-from refund_harness.app import app, get_llm, get_pool
+from refund_harness.app import app, get_llm
 from refund_harness.errors import ModelCallError, ModelTimeoutError, ReplyParseError
 from refund_harness.llm import FakeLLM, RaisingLLM
 from refund_harness.types import LLMResponse, ToolCall
-
-
-@pytest.fixture
-async def client(pool):
-    app.dependency_overrides[get_pool] = lambda: pool
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(headers={"X-Merchant-Id": "acme"}, transport=transport, base_url="http://test") as c:
-        yield c
-    app.dependency_overrides.clear()      # runs after each test, so fakes can't leak
 
 
 async def test_ask_success(client):

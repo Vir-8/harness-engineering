@@ -1,7 +1,26 @@
 import asyncio
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from enum import StrEnum
 
 from psycopg import AsyncConnection
 from psycopg_pool import AsyncConnectionPool
+
+
+class RefundOutcome(StrEnum):
+    CREATED = "created"
+    DUPLICATE = "duplicate"
+    INELIGIBLE = "ineligible"
+    ORDER_NOT_FOUND = "order_not_found"
+
+
+@dataclass(frozen=True)
+class SubmitRefundResult:
+    """What happened. The tool layer decides how to word this for the model."""
+
+    outcome: RefundOutcome
+    refund_id: int | None = None  # set only when CREATED
+    reasons: tuple[str, ...] = ()  # set only when INELIGIBLE
 
 
 async def get_order_row(pool: AsyncConnectionPool, merchant_id: str, order_id: str) -> dict | None:
@@ -14,22 +33,31 @@ async def get_order_row(pool: AsyncConnectionPool, merchant_id: str, order_id: s
         return row
 
 
+async def get_order_refund_id(conn: AsyncConnection, merchant_id: str, order_id: str) -> str:
+    cur = await conn.execute(
+        "SELECT id FROM refund_requests WHERE merchant_id = %s AND order_id = %s",
+        (merchant_id, order_id)
+    )
+    row = await cur.fetchone()
+    return row["id"]
+
+
 async def request_refund(conn: AsyncConnection, merchant_id: str, order_id: str, amount_cents: int) -> int | None:
-    async with conn:
-        cur = await conn.execute(
-            "INSERT INTO refund_requests (merchant_id, order_id, amount_cents) "
-            "VALUES  (%s, %s, %s) "
-            "ON CONFLICT (merchant_id, order_id) WHERE status <> 'rejected' DO NOTHING RETURNING id",
-            (merchant_id, order_id, amount_cents),
-        )
-        row = await cur.fetchone()
-        if row is None:
-            return None
-        return row["id"]
+    """Insert a refund request; None if a live one already exists. Does not manage the transaction: the caller does."""
+    cur = await conn.execute(
+        "INSERT INTO refund_requests (merchant_id, order_id, amount_cents) "
+        "VALUES  (%s, %s, %s) "
+        "ON CONFLICT (merchant_id, order_id) WHERE status <> 'rejected' DO NOTHING RETURNING id",
+        (merchant_id, order_id, amount_cents),
+    )
+    row = await cur.fetchone()
+    if row is None:
+        return None
+    return row["id"]
 
 
-async def approve_refund(conn: AsyncConnection, merchant_id: str, refund_id: str, actor: str) -> int | None:
-    async with conn:
+async def approve_refund(conn: AsyncConnection, merchant_id: str, refund_id: int, actor: str) -> bool:
+    async with conn.transaction():
         cur = await conn.execute(
             "UPDATE refund_requests SET status = 'approved' "
             "WHERE id = %s AND merchant_id = %s "
@@ -45,3 +73,49 @@ async def approve_refund(conn: AsyncConnection, merchant_id: str, refund_id: str
             (refund_id, 'approved', actor)
         )
         return True
+
+
+def check_refund_eligibility(order_row, amount_cents, now: datetime) -> list[str]:
+    order_date = order_row["delivered_at"]
+    order_amount = order_row["total_cents"]
+    order_status = order_row["status"]
+    rejections = []
+
+    if amount_cents > order_amount:
+        rejections.append("Cannot refund more than order amount.")
+    if order_status != "delivered":
+        rejections.append("Invalid order, has not been delivered.")
+
+    if order_date is None:
+        rejections.append("Order date not found.")
+    else:
+        if (now - order_date) >= timedelta(days=31):
+            rejections.append("It has been over 30 days since delivery, order ineligible for refund.")
+        if (now - order_date) < timedelta(days=0):
+            rejections.append("Invalid order date.")
+    
+    return rejections
+
+
+async def submit_refund(
+    conn: AsyncConnection, merchant_id: str, order_id: str, amount_cents: int, now: datetime
+) -> SubmitRefundResult:
+    async with conn.transaction():
+        cur = await conn.execute(
+            "SELECT item, status, total_cents, delivered_at "
+            "FROM orders "
+            "WHERE merchant_id = %s AND id = %s "
+            "FOR UPDATE",
+            (merchant_id, order_id)
+        )
+        order_row = await cur.fetchone()
+        if order_row is None:
+            return SubmitRefundResult(RefundOutcome.ORDER_NOT_FOUND)
+        rejections = check_refund_eligibility(order_row=order_row, amount_cents=amount_cents, now=now)
+        if rejections:
+            return SubmitRefundResult(RefundOutcome.INELIGIBLE, reasons=tuple(rejections))
+
+        order_refund_id = await request_refund(conn=conn, merchant_id=merchant_id, order_id=order_id, amount_cents=amount_cents)
+        if order_refund_id is None:
+            return SubmitRefundResult(RefundOutcome.DUPLICATE)
+        return SubmitRefundResult(RefundOutcome.CREATED, refund_id=order_refund_id)
