@@ -18,7 +18,7 @@ async def request_refund(conn: AsyncConnection, merchant_id: str, order_id: str,
     async with conn:
         cur = await conn.execute(
             "INSERT INTO refund_requests (merchant_id, order_id, amount_cents) "
-            "VALUES  (%s, %s, %s)" \
+            "VALUES  (%s, %s, %s) "
             "ON CONFLICT (merchant_id, order_id) WHERE status <> 'rejected' DO NOTHING RETURNING id",
             (merchant_id, order_id, amount_cents),
         )
@@ -26,3 +26,22 @@ async def request_refund(conn: AsyncConnection, merchant_id: str, order_id: str,
         if row is None:
             return None
         return row["id"]
+
+
+async def approve_refund(conn: AsyncConnection, merchant_id: str, refund_id: str, actor: str) -> int | None:
+    async with conn:
+        cur = await conn.execute(
+            "UPDATE refund_requests SET status = 'approved' "
+            "WHERE id = %s AND merchant_id = %s "
+            "AND status = 'pending' RETURNING id",
+            (refund_id, merchant_id),
+        )
+        row = await cur.fetchone()
+        if row is None:
+            return False
+        cur = await conn.execute(
+            "INSERT INTO refund_events (refund_id, event, actor) "
+            "VALUES (%s, %s, %s)",
+            (refund_id, 'approved', actor)
+        )
+        return True
