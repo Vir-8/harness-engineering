@@ -1,5 +1,18 @@
+import asyncio
+
+from psycopg import AsyncConnection
+import pytest
+
 from refund_harness.refund_tools import build_registry
-from refund_harness.repository import get_order_row
+from refund_harness.repository import get_order_row, request_refund
+
+
+@pytest.fixture
+async def clean_refunds(pool):
+    async with pool.connection() as conn:
+        await conn.execute(
+                    "TRUNCATE TABLE refund_requests",
+        )
 
 
 async def test_returns_the_merchants_own_order(pool):
@@ -22,3 +35,14 @@ async def test_harness_gets_order(pool):
     registry = build_registry(pool, "acme")
     result = await registry.get("get_order").run({"order_id": "A100"})
     assert "headphones" in result
+
+
+@pytest.mark.usefixtures("clean_refunds")
+async def test_refund_same_order_twice(pool):
+    async def attempt():
+        async with pool.connection() as conn:
+            return await request_refund(conn, "acme", "A100", 5900)
+
+    results = await asyncio.gather(attempt(), attempt())
+    assert results.count(None) == 1
+    assert sum(isinstance(x, int) for x in results) == 1
