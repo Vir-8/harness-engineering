@@ -10,9 +10,12 @@ import asyncio
 import sys
 
 from refund_harness.adapters.gemini_embeddings import GeminiEmbedder
-from refund_harness.db import create_pool
+from refund_harness.data.db import create_pool
+from refund_harness.data.repository import (
+    search_policy_by_vector,
+    search_policy_keyword,
+)
 from refund_harness.refund_tools import MAX_POLICY_DISTANCE
-from refund_harness.repository import search_policy_by_vector, search_policy_keyword
 
 # (what a customer might say, what we hope it finds)
 QUESTIONS = [

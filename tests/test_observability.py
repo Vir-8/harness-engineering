@@ -23,7 +23,8 @@ from sentry_sdk.integrations.google_genai import GoogleGenAIIntegration
 from sentry_sdk.integrations.otlp import OTLPIntegration
 
 from refund_harness import observability
-from refund_harness.db import create_pool
+from refund_harness.agent.types import LLMResponse, Message, ToolCall, Usage
+from refund_harness.data.db import create_pool
 from refund_harness.observability import (
     MAX_CONTENT_CHARS,
     TraceTreeExporter,
@@ -38,7 +39,6 @@ from refund_harness.observability import (
     report_tool_crash,
     setup_tracing,
 )
-from refund_harness.types import LLMResponse, Message, ToolCall, Usage
 
 
 @pytest.fixture(autouse=True)

@@ -21,11 +21,11 @@ from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
 )
 from pydantic import BaseModel  # noqa: E402
 
-from refund_harness.llm import FakeLLM  # noqa: E402
-from refund_harness.loop import run_agent  # noqa: E402
+from refund_harness.agent.llm import FakeLLM  # noqa: E402
+from refund_harness.agent.loop import run_agent  # noqa: E402
+from refund_harness.agent.tools import Tool, ToolRegistry  # noqa: E402
+from refund_harness.agent.types import LLMResponse, ToolCall, Usage  # noqa: E402
 from refund_harness.observability import init_sentry  # noqa: E402
-from refund_harness.tools import Tool, ToolRegistry  # noqa: E402
-from refund_harness.types import LLMResponse, ToolCall, Usage  # noqa: E402
 
 received: list[bytes] = []
 

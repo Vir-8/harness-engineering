@@ -11,14 +11,14 @@ from helpers import (
 )
 from pydantic import ValidationError
 
-from refund_harness.embedder import FakeEmbedder
+from refund_harness.data.repository import RefundOutcome, SubmitRefundResult
 from refund_harness.refund_tools import (
     build_registry,
     format_order,
     format_policy_results,
     format_refund_result,
 )
-from refund_harness.repository import RefundOutcome, SubmitRefundResult
+from refund_harness.retrieval.embedder import FakeEmbedder
 
 NOW = datetime(2026, 10, 17, 12, 0, tzinfo=timezone.utc)  # fixed clock: results never depend on today's date
 
@@ -185,7 +185,7 @@ def test_no_chunks_at_all_gets_the_same_do_not_guess_message():
 # which compare by shared words, so the questions below reuse the chunks' own words. ---
 
 async def embedded_sandbox_tool(pool, sandbox):
-    from refund_harness.ingest import embed_missing_chunks
+    from refund_harness.retrieval.ingest import embed_missing_chunks
 
     embedder = FakeEmbedder()
     await embed_missing_chunks(pool, embedder, merchant_id=sandbox)

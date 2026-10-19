@@ -32,7 +32,7 @@ from opentelemetry.trace import StatusCode
 from sentry_sdk.integrations.google_genai import GoogleGenAIIntegration
 from sentry_sdk.integrations.otlp import OTLPIntegration
 
-from .types import LLMResponse, Message, ToolCall, Usage
+from refund_harness.agent.types import LLMResponse, Message, ToolCall, Usage
 
 PRIVATE_BY_DEFAULT = {
     "user_info": False,

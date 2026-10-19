@@ -8,19 +8,22 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Path, Request
 from fastapi.responses import JSONResponse
 from psycopg_pool import AsyncConnectionPool
 
-from refund_harness.db import create_pool
-
-from .adapters.claude_cli import DEFAULT_MODEL, ClaudeCLIClient
-from .adapters.gemini_embeddings import GeminiEmbedder
-from .embedder import Embedder
-from .errors import ModelCallError, ModelTimeoutError, ReplyParseError
-from .llm import LLMClient
-from .loop import run_agent
-from .observability import enable_tracing, init_sentry
-from .refund_tools import build_registry
-from .repository import approve_refund
-from .schemas import ApproveResponse, AskRequest, AskResponse
-from .tools import ToolRegistry
+from refund_harness.adapters.claude_cli import DEFAULT_MODEL, ClaudeCLIClient
+from refund_harness.adapters.gemini_embeddings import GeminiEmbedder
+from refund_harness.agent.errors import (
+    ModelCallError,
+    ModelTimeoutError,
+    ReplyParseError,
+)
+from refund_harness.agent.llm import LLMClient
+from refund_harness.agent.loop import run_agent
+from refund_harness.agent.tools import ToolRegistry
+from refund_harness.data.db import create_pool
+from refund_harness.data.repository import approve_refund
+from refund_harness.observability import enable_tracing, init_sentry
+from refund_harness.refund_tools import build_registry
+from refund_harness.retrieval.embedder import Embedder
+from refund_harness.schemas import ApproveResponse, AskRequest, AskResponse
 
 MAX_STEPS = 5
 

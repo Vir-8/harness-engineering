@@ -4,7 +4,7 @@ from typing import Any, Awaitable, Callable
 
 from pydantic import BaseModel
 
-from .types import ToolSpec
+from refund_harness.agent.types import ToolSpec
 
 
 class Tool:

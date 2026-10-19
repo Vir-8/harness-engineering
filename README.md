@@ -6,20 +6,25 @@ Learning project: an agent harness for an e-commerce support and refund agent, b
 
 ```
 src/refund_harness/
-  types.py          provider-neutral data shapes (Message, ToolCall, RunResult, ...)
-  llm.py            LLMClient protocol + test doubles (FakeLLM, RaisingLLM)
-  embedder.py       Embedder protocol + FakeEmbedder (text -> vector)
-  errors.py         model-call failures, raised by adapters, mapped to HTTP by the API
-  tools.py          Tool / ToolRegistry (Pydantic validates tool arguments)
-  refund_tools.py   the agent's tools: get_order, search_policy, submit_order_refund (per-merchant, built per request)
-  repository.py     all SQL: orders, refund requests/approval/eligibility, policy search (keyword + vector)
-  ingest.py         offline job: embed policy chunks and store the vectors
-  db.py             Postgres connection pool
-  loop.py           the agent loop (run_agent)
-  adapters/         one adapter per provider (claude_cli.py for the model, gemini_embeddings.py for embeddings)
+  app.py            FastAPI app and composition root: endpoints (ask the agent, human approval), dependencies
   schemas.py        HTTP request/response models
-  app.py            FastAPI app: endpoints (ask the agent, human approval), dependencies, error translation
+  refund_tools.py   the agent's tools: get_order, search_policy, submit_order_refund (per-merchant, built per request)
   observability.py  Sentry errors + OpenTelemetry traces (console tree, GenAI spans, tokens/cost), all switchable
+  agent/            the harness core, provider-neutral
+    loop.py           the agent loop (run_agent), with its spans
+    tools.py          Tool / ToolRegistry (Pydantic validates tool arguments)
+    types.py          Message, ToolCall, LLMResponse, Usage, RunResult, ...
+    llm.py            LLMClient protocol + test doubles (FakeLLM, RaisingLLM)
+    errors.py         model-call failures, raised by adapters, mapped to HTTP by the API
+  adapters/         one file per outside provider
+    claude_cli.py     the model, via the `claude` CLI (lean context, pinned model, usage parsing)
+    gemini_embeddings.py   embeddings, via the google-genai SDK
+  retrieval/        turning text into vectors
+    embedder.py       Embedder protocol + FakeEmbedder
+    ingest.py         offline job: embed policy chunks and store the vectors
+  data/             Postgres
+    db.py             connection pool
+    repository.py     all SQL: orders, refund requests/approval/eligibility, policy search (keyword + vector)
 db/init/            schema + seed, run in order by Postgres on a FRESH volume only (apply later files by hand otherwise)
 scripts/
   try_it.py         run one real question through the whole harness and print every step (needs .env)

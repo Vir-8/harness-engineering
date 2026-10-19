@@ -2,7 +2,7 @@
 
 from typing import Protocol
 
-from .types import LLMResponse, Message, ToolSpec
+from refund_harness.agent.types import LLMResponse, Message, ToolSpec
 
 
 class LLMClient(Protocol):

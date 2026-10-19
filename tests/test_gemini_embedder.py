@@ -18,8 +18,12 @@ from refund_harness.adapters.gemini_embeddings import (
     document_prompt,
     query_prompt,
 )
-from refund_harness.embedder import EMBEDDING_DIMENSIONS, Document
-from refund_harness.errors import ModelCallError, ModelTimeoutError, ReplyParseError
+from refund_harness.agent.errors import (
+    ModelCallError,
+    ModelTimeoutError,
+    ReplyParseError,
+)
+from refund_harness.retrieval.embedder import EMBEDDING_DIMENSIONS, Document
 
 
 class FakeModels:

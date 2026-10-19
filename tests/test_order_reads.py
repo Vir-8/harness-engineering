@@ -2,7 +2,7 @@
 
 from helpers import A100_TOTAL_CENTS, ACME, GLOBEX
 
-from refund_harness.repository import get_order_row
+from refund_harness.data.repository import get_order_row
 
 
 async def test_returns_the_merchants_own_order(pool):

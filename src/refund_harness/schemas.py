@@ -4,7 +4,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from .types import StopReason
+from refund_harness.agent.types import StopReason
 
 
 class AskRequest(BaseModel):

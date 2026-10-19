@@ -4,7 +4,11 @@ import math
 
 import pytest
 
-from refund_harness.embedder import EMBEDDING_DIMENSIONS, Document, FakeEmbedder
+from refund_harness.retrieval.embedder import (
+    EMBEDDING_DIMENSIONS,
+    Document,
+    FakeEmbedder,
+)
 
 
 def cosine_similarity(a: list[float], b: list[float]) -> float:

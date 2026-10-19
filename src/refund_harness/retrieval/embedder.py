@@ -1,4 +1,4 @@
-"""The seam between the harness and any embeddings provider (same idea as llm.py).
+"""The seam between the harness and any embeddings provider (same idea as agent/llm.py).
 
 An embedding turns text into a vector (a list of numbers) so that texts with similar meaning end up close together.
 Providers want to know what the text is FOR, so documents and questions go through different methods.

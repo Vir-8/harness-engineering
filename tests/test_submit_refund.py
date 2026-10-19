@@ -7,7 +7,7 @@ import asyncio
 
 from helpers import A100_TOTAL_CENTS, ACME, DAY, GLOBEX, moment_after_delivery, submit
 
-from refund_harness.repository import RefundOutcome
+from refund_harness.data.repository import RefundOutcome
 
 
 async def test_eligible_order_creates_a_pending_refund(pool, refunds):

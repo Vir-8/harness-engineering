@@ -8,9 +8,9 @@ import time
 
 from fastapi import FastAPI
 
-from refund_harness.llm import LLMResponse
-from refund_harness.loop import run_agent
-from refund_harness.tools import ToolRegistry
+from refund_harness.agent.llm import LLMResponse
+from refund_harness.agent.loop import run_agent
+from refund_harness.agent.tools import ToolRegistry
 
 app = FastAPI()
 WORK_SECONDS = 2

@@ -7,8 +7,8 @@ Run from the project root, loading your key from .env:
 import asyncio
 
 from refund_harness.adapters.gemini_embeddings import GeminiEmbedder
-from refund_harness.db import create_pool
-from refund_harness.ingest import embed_missing_chunks
+from refund_harness.data.db import create_pool
+from refund_harness.retrieval.ingest import embed_missing_chunks
 
 
 async def main() -> None:

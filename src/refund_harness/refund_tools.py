@@ -6,15 +6,15 @@ from typing import Callable
 from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel, Field
 
-from .embedder import Embedder
-from .repository import (
+from refund_harness.agent.tools import Tool, ToolRegistry
+from refund_harness.data.repository import (
     RefundOutcome,
     SubmitRefundResult,
     get_order_row,
     search_policy_by_vector,
     submit_refund,
 )
-from .tools import Tool, ToolRegistry
+from refund_harness.retrieval.embedder import Embedder
 
 # Policy chunks farther than this (cosine distance) from the question are treated as "not about this".
 # Measured with scripts/compare_search.py on gemini-embedding-2 (768 dims): on-topic best matches were 0.20-0.39,

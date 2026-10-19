@@ -3,9 +3,9 @@ import json
 import pytest
 
 from refund_harness.adapters.claude_cli import LEAN_CONTEXT_FLAGS, ClaudeCLIClient
-from refund_harness.errors import ReplyParseError
-from refund_harness.loop import run_agent
-from refund_harness.types import Message, ToolCall, ToolSpec
+from refund_harness.agent.errors import ReplyParseError
+from refund_harness.agent.loop import run_agent
+from refund_harness.agent.types import Message, ToolCall, ToolSpec
 
 
 def raw(text: str, tool_calls: list, **envelope) -> str:

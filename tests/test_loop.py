@@ -1,8 +1,8 @@
 import asyncio
 
-from refund_harness.llm import FakeLLM
-from refund_harness.loop import run_agent
-from refund_harness.types import LLMResponse, ToolCall
+from refund_harness.agent.llm import FakeLLM
+from refund_harness.agent.loop import run_agent
+from refund_harness.agent.types import LLMResponse, ToolCall
 
 
 def call(name: str, args: dict, id: str = "c1") -> LLMResponse:

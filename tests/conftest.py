@@ -22,11 +22,11 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor  # noqa: E402
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
+from refund_harness.agent.tools import Tool, ToolRegistry  # noqa: E402
 from refund_harness.app import app, get_embedder, get_pool  # noqa: E402
-from refund_harness.db import create_pool  # noqa: E402
-from refund_harness.embedder import FakeEmbedder  # noqa: E402
+from refund_harness.data.db import create_pool  # noqa: E402
 from refund_harness.observability import init_sentry  # noqa: E402
-from refund_harness.tools import Tool, ToolRegistry  # noqa: E402
+from refund_harness.retrieval.embedder import FakeEmbedder  # noqa: E402
 
 # Our own spans (the agent loop) use the process-wide tracer provider, which can be set only once per process.
 # Tests set it here, to an in-memory exporter, and read what a test produced through the `spans` fixture.

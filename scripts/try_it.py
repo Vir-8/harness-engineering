@@ -8,8 +8,8 @@ import sys
 
 from refund_harness.adapters.claude_cli import ClaudeCLIClient
 from refund_harness.adapters.gemini_embeddings import GeminiEmbedder
-from refund_harness.db import create_pool
-from refund_harness.loop import run_agent
+from refund_harness.agent.loop import run_agent
+from refund_harness.data.db import create_pool
 from refund_harness.refund_tools import build_registry
 
 

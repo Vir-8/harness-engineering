@@ -2,8 +2,10 @@
 
 from opentelemetry import trace
 
-from .llm import LLMClient
-from .observability import (
+from refund_harness.agent.llm import LLMClient
+from refund_harness.agent.tools import ToolRegistry
+from refund_harness.agent.types import Message, RunResult, Usage
+from refund_harness.observability import (
     record_chat_content,
     record_run_totals,
     record_tool_call,
@@ -11,8 +13,6 @@ from .observability import (
     record_usage,
     report_tool_crash,
 )
-from .tools import ToolRegistry
-from .types import Message, RunResult, Usage
 
 tracer = trace.get_tracer("agent_loop")
 

@@ -14,7 +14,7 @@ import sentry_sdk
 from psycopg_pool import AsyncConnectionPool
 from sentry_sdk.transport import Transport
 
-from refund_harness.repository import (
+from refund_harness.data.repository import (
     approve_refund,
     get_order_row,
     request_refund,

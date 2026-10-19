@@ -7,9 +7,9 @@ tenant scoping offline. Whether the REAL Gemini vectors capture meaning is what 
 import pytest
 from helpers import ACME, SANDBOX_CHUNKS
 
-from refund_harness.embedder import Document, FakeEmbedder
-from refund_harness.ingest import embed_missing_chunks
-from refund_harness.repository import search_policy_by_vector
+from refund_harness.data.repository import search_policy_by_vector
+from refund_harness.retrieval.embedder import Document, FakeEmbedder
+from refund_harness.retrieval.ingest import embed_missing_chunks
 
 
 @pytest.fixture

@@ -8,7 +8,7 @@ import asyncio
 import math
 
 from refund_harness.adapters.gemini_embeddings import GeminiEmbedder
-from refund_harness.embedder import Document
+from refund_harness.retrieval.embedder import Document
 
 
 def cosine_similarity(a: list[float], b: list[float]) -> float:

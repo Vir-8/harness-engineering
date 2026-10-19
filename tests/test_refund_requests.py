@@ -8,7 +8,7 @@ import asyncio
 import pytest
 from helpers import A100_TOTAL_CENTS, ACME, request
 
-from refund_harness.repository import request_refund
+from refund_harness.data.repository import request_refund
 
 
 async def test_a_second_request_for_the_same_order_returns_none(pool, refunds):

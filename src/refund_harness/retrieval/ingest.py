@@ -5,8 +5,8 @@ An offline job that runs when policy text changes. It is not part of answering a
 
 from psycopg_pool import AsyncConnectionPool
 
-from .embedder import Document, Embedder
-from .repository import to_vector_literal
+from refund_harness.data.repository import to_vector_literal
+from refund_harness.retrieval.embedder import Document, Embedder
 
 
 async def embed_missing_chunks(pool: AsyncConnectionPool, embedder: Embedder, merchant_id: str | None = None) -> int:

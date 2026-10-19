@@ -8,8 +8,8 @@ import json
 import pytest
 from helpers import SANDBOX_CHUNKS
 
-from refund_harness.embedder import Document, FakeEmbedder
-from refund_harness.ingest import embed_missing_chunks
+from refund_harness.retrieval.embedder import Document, FakeEmbedder
+from refund_harness.retrieval.ingest import embed_missing_chunks
 
 
 class BrokenEmbedder:

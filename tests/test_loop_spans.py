@@ -9,11 +9,11 @@ import pytest
 from opentelemetry.trace import StatusCode
 from pydantic import BaseModel
 
-from refund_harness.errors import ModelCallError
-from refund_harness.llm import FakeLLM, RaisingLLM
-from refund_harness.loop import run_agent
-from refund_harness.tools import Tool, ToolRegistry
-from refund_harness.types import LLMResponse, ToolCall, Usage
+from refund_harness.agent.errors import ModelCallError
+from refund_harness.agent.llm import FakeLLM, RaisingLLM
+from refund_harness.agent.loop import run_agent
+from refund_harness.agent.tools import Tool, ToolRegistry
+from refund_harness.agent.types import LLMResponse, ToolCall, Usage
 
 
 class Args(BaseModel):

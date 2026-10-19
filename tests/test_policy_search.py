@@ -7,7 +7,7 @@ Seed data (db/init/06): acme's return window is 30 days, globex's is 14. Both ha
 import pytest
 from helpers import ACME, GLOBEX
 
-from refund_harness.repository import search_policy_keyword
+from refund_harness.data.repository import search_policy_keyword
 
 
 async def titles(pool, merchant_id: str, query: str, limit: int = 3) -> list[str]:
