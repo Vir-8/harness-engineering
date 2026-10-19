@@ -48,6 +48,15 @@ wheels = [
 ]
 
 [[package]]
+name = "backoff"
+version = "2.2.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/47/d7/5bbeb12c44d7c4f2fb5b56abce497eb5ed9f34d85701de869acedd602619/backoff-2.2.1.tar.gz", hash = "sha256:03f829f5bb1923180821643f8753b0502c3b682293992485b0eef2807afa5cba", size = 17001, upload-time = "2022-10-05T19:19:32.061Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/df/73/b6e24bd22e6720ca8ee9a85a0c4a2971af8497d8f3193fa05390cbd46e09/backoff-2.2.1-py3-none-any.whl", hash = "sha256:63579f9a0628e06278f7e47b7d7d5b6ce20dc65c5e96a6f3ca99a6adca0396e8", size = 15148, upload-time = "2022-10-05T19:19:30.546Z" },
+]
+
+[[package]]
 name = "certifi"
 version = "2026.7.22"
 source = { registry = "https://pypi.org/simple" }
@@ -620,6 +629,26 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/01/e1/2069291243c926a2ff1cd706c7f3eeb9b62144bf60f77c9fb9ff2fb26bd3/iniconfig-2.3.1.tar.gz", hash = "sha256:67f4b9c50da0dedf52af349e7749a80a9057a5031199791b906c3bb3ae878960", size = 21209, upload-time = "2026-10-06T22:48:38.076Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/56/43/4ca9e49d27a1fcf6bece6f6aec0ea46bb9112489b93d4b688fb415457bdb/iniconfig-2.3.1-py3-none-any.whl", hash = "sha256:9121e2c1fdb355232495be3194c8dfe87ccc2d5dee45947b78e68f499790d7a7", size = 7552, upload-time = "2026-10-06T22:48:36.959Z" },
+]
+
+[[package]]
+name = "langfuse"
+version = "5.0.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "backoff" },
+    { name = "httpx" },
+    { name = "opentelemetry-api" },
+    { name = "opentelemetry-exporter-otlp-proto-http" },
+    { name = "opentelemetry-sdk" },
+    { name = "packaging" },
+    { name = "pydantic" },
+    { name = "typing-extensions" },
+    { name = "wrapt" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/05/02/1da2d1753ded73faecf445e3944ecd13703e71ce7af6a136acc8ddfc7d17/langfuse-5.0.2.tar.gz", hash = "sha256:8ca53a2c49d99ad5dc3c1d356e3802f00765c0bf155da5d078978cb467a5a474", size = 365828, upload-time = "2026-10-16T10:01:37.759Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ef/93/18acd320f902453a8c8d82d9a583b473c7c1f762ce0b8f1a9c0ecc2c0498/langfuse-5.0.2-py3-none-any.whl", hash = "sha256:fee8184e88a7310fdae521d6abf1e4ba5f4d3d8ce67055fa641d2aab94e50380", size = 636051, upload-time = "2026-10-16T10:01:39.329Z" },
 ]
 
 [[package]]
@@ -1255,6 +1284,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "google-genai" },
     { name = "httpx" },
+    { name = "langfuse" },
     { name = "opentelemetry-api" },
     { name = "opentelemetry-instrumentation-fastapi" },
     { name = "opentelemetry-instrumentation-httpx" },
@@ -1262,6 +1292,7 @@ dependencies = [
     { name = "opentelemetry-sdk" },
     { name = "psycopg", extra = ["binary", "pool"] },
     { name = "pydantic" },
+    { name = "pyyaml" },
     { name = "sentry-sdk", extra = ["opentelemetry-otlp"] },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -1278,6 +1309,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.143.3" },
     { name = "google-genai", specifier = ">=2.31.0" },
     { name = "httpx", specifier = ">=0.28.1" },
+    { name = "langfuse", specifier = ">=5.0.2" },
     { name = "opentelemetry-api", specifier = ">=1.45.1" },
     { name = "opentelemetry-instrumentation-fastapi", specifier = ">=0.66b1" },
     { name = "opentelemetry-instrumentation-httpx", specifier = ">=0.66b1" },
@@ -1285,6 +1317,7 @@ requires-dist = [
     { name = "opentelemetry-sdk", specifier = ">=1.45.1" },
     { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.3.6" },
     { name = "pydantic", specifier = ">=2.14.1" },
+    { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "sentry-sdk", extras = ["opentelemetry-otlp"], specifier = ">=2.72.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.54.0" },
 ]

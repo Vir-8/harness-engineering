@@ -16,7 +16,7 @@ from refund_harness.agent.errors import (
     ReplyParseError,
 )
 from refund_harness.agent.llm import LLMClient
-from refund_harness.agent.loop import run_agent
+from refund_harness.agent.loop import MAX_STEPS, run_agent
 from refund_harness.agent.tools import ToolRegistry
 from refund_harness.data.db import create_pool
 from refund_harness.data.repository import approve_refund
@@ -25,7 +25,6 @@ from refund_harness.refund_tools import build_registry
 from refund_harness.retrieval.embedder import Embedder
 from refund_harness.schemas import ApproveResponse, AskRequest, AskResponse
 
-MAX_STEPS = 5
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

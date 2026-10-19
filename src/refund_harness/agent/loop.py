@@ -16,6 +16,8 @@ from refund_harness.observability import (
 
 tracer = trace.get_tracer("agent_loop")
 
+MAX_STEPS = 5  # tool rounds the application allows per question (the evals use the same limit)
+
 async def run_agent(llm: LLMClient, tools: ToolRegistry, user_input: str, max_steps: int = 10) -> RunResult:
     with tracer.start_as_current_span("invoke_agent") as agent_span:
         agent_span.set_attribute("gen_ai.operation.name", "invoke_agent")
