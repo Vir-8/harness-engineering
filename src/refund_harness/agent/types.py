@@ -36,6 +36,7 @@ class Usage(BaseModel):
     output_tokens: int
     cache_read_tokens: int = 0  # input tokens served from the provider's cache
     cache_write_tokens: int = 0  # input tokens written to the provider's cache
+    cache_write_1h_tokens: int = 0  # the part of cache_write_tokens written with the 1-hour lifetime (priced higher)
     cost_usd: float | None = None
 
 
