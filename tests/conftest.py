@@ -1,12 +1,39 @@
-import httpx
-import pytest
-from helpers import SANDBOX, SANDBOX_CHUNKS, Refunds
-from pydantic import BaseModel
+import os
 
-from refund_harness.app import app, get_embedder, get_pool
-from refund_harness.db import create_pool
-from refund_harness.embedder import FakeEmbedder
-from refund_harness.tools import Tool, ToolRegistry
+# Tests must never report to the real Sentry project, even when run with `--env-file .env`.
+# This has to happen before refund_harness.app is imported, because importing it starts Sentry.
+os.environ.pop("SENTRY_DSN", None)
+# Nor should every test request print a trace tree: tracing is on by default, so switch it off before the import.
+os.environ["TRACING"] = "off"
+
+import httpx  # noqa: E402
+import pytest  # noqa: E402
+from helpers import (  # noqa: E402
+    FAKE_DSN,
+    SANDBOX,
+    SANDBOX_CHUNKS,
+    CatchingTransport,
+    Refunds,
+    reset_sentry,
+)
+from opentelemetry import trace  # noqa: E402
+from opentelemetry.sdk.trace import TracerProvider  # noqa: E402
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor  # noqa: E402
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter  # noqa: E402
+from pydantic import BaseModel  # noqa: E402
+
+from refund_harness.app import app, get_embedder, get_pool  # noqa: E402
+from refund_harness.db import create_pool  # noqa: E402
+from refund_harness.embedder import FakeEmbedder  # noqa: E402
+from refund_harness.observability import init_sentry  # noqa: E402
+from refund_harness.tools import Tool, ToolRegistry  # noqa: E402
+
+# Our own spans (the agent loop) use the process-wide tracer provider, which can be set only once per process.
+# Tests set it here, to an in-memory exporter, and read what a test produced through the `spans` fixture.
+_SPAN_EXPORTER = InMemorySpanExporter()
+_provider = TracerProvider()
+_provider.add_span_processor(SimpleSpanProcessor(_SPAN_EXPORTER))
+trace.set_tracer_provider(_provider)
 
 ORDERS = {"A100": "delivered 3 days ago"}
 
@@ -71,3 +98,20 @@ async def sandbox(pool):
             )
     yield SANDBOX
     await wipe()
+
+
+@pytest.fixture
+def spans():
+    """The spans finished during this test, in the order they started."""
+    _SPAN_EXPORTER.clear()
+    yield lambda: sorted(_SPAN_EXPORTER.get_finished_spans(), key=lambda s: s.start_time)
+    _SPAN_EXPORTER.clear()
+
+
+@pytest.fixture
+def sentry_events():
+    """Turns Sentry on for one test, sending into memory instead of the network. Read `.events` afterwards."""
+    transport = CatchingTransport()
+    init_sentry(FAKE_DSN, export_traces=False, transport=transport)  # export_traces=False: no OTLP exporter on the shared provider
+    yield transport
+    reset_sentry()

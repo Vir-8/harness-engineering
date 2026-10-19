@@ -26,9 +26,23 @@ class ToolSpec(BaseModel):
     parameters: dict[str, Any]  # JSON Schema
 
 
+class Usage(BaseModel):
+    """What one model call cost, in the shape OpenTelemetry and Sentry expect."""
+
+    provider: str | None = None
+    request_model: str | None = None  # the model we asked for
+    model: str | None = None  # the model that answered, as the provider reports it
+    input_tokens: int  # the TOTAL input, including the cached tokens below (a subset of it, not extra)
+    output_tokens: int
+    cache_read_tokens: int = 0  # input tokens served from the provider's cache
+    cache_write_tokens: int = 0  # input tokens written to the provider's cache
+    cost_usd: float | None = None
+
+
 class LLMResponse(BaseModel):
     text: str = ""
     tool_calls: list[ToolCall] = Field(default_factory=list)
+    usage: Usage | None = None  # None when the provider did not say
 
 
 StopReason = Literal["final", "max_steps"]

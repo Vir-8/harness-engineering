@@ -6,10 +6,13 @@ Seed data these tests rely on (db/init/02_seed.sql):
   globex A100  blender    $120.00  (same order id as acme's, different merchant on purpose)
 """
 
+import json
 from datetime import datetime, timedelta
 from typing import Callable
 
+import sentry_sdk
 from psycopg_pool import AsyncConnectionPool
+from sentry_sdk.transport import Transport
 
 from refund_harness.repository import (
     approve_refund,
@@ -96,3 +99,37 @@ class Refunds:
     async def _fetch_nothing(self, sql: str, params: tuple) -> None:
         async with self._pool.connection() as conn:
             await conn.execute(sql, params)
+
+
+FAKE_DSN = "https://publickey@o0.ingest.sentry.io/0"
+
+
+class CatchingTransport(Transport):
+    """Stands in for Sentry's network connection: collects what would have been sent, so nothing leaves the machine."""
+
+    def __init__(self):
+        super().__init__()
+        self.envelopes = []
+
+    def capture_envelope(self, envelope):
+        self.envelopes.append(envelope)
+
+    @property
+    def events(self) -> list[dict]:
+        """Every error event Sentry would have sent, as plain dicts."""
+        payloads = [item.payload.json for e in self.envelopes for item in e.items]
+        return [p for p in payloads if p and ("exception" in p or "message" in p)]
+
+    @property
+    def reports(self) -> str:
+        """Everything that would have been sent, as one searchable string."""
+        return "\n".join(json.dumps(item.payload.json, default=str) for e in self.envelopes for item in e.items if item.payload.json)
+
+
+def reset_sentry() -> None:
+    """Put Sentry back to 'off' after a test, without switching on any of its default integrations.
+
+    sentry_sdk.init(dsn=None) would auto-enable them (google_genai among them), and that would change what the next
+    test sees. Note that is_active() is True for ANY real client, DSN or not, so it can't tell on from off.
+    """
+    sentry_sdk.init(dsn=None, default_integrations=False, auto_enabling_integrations=False)

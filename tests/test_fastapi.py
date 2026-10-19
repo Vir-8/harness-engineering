@@ -144,3 +144,11 @@ async def test_the_model_is_shown_the_merchants_retrieved_policy_text(client, po
 
     assert r.status_code == 200
     assert "Gift cards are final sale." in fake.calls[1][-1].content  # the retrieved chunk reached the model
+
+
+def test_the_model_can_be_overridden_from_the_environment(monkeypatch):
+    monkeypatch.setenv("CLAUDE_MODEL", "claude-haiku-5-5")
+    assert get_llm().model == "claude-haiku-5-5"
+
+    monkeypatch.delenv("CLAUDE_MODEL")
+    assert get_llm().model == "claude-sonnet-5-5"

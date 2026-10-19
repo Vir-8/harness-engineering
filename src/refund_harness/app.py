@@ -1,5 +1,6 @@
 """HTTP layer. The agent logic lives elsewhere; this file only translates HTTP <-> harness."""
 
+import os
 from contextlib import asynccontextmanager
 from functools import lru_cache
 
@@ -9,12 +10,13 @@ from psycopg_pool import AsyncConnectionPool
 
 from refund_harness.db import create_pool
 
-from .adapters.claude_cli import ClaudeCLIClient
+from .adapters.claude_cli import DEFAULT_MODEL, ClaudeCLIClient
 from .adapters.gemini_embeddings import GeminiEmbedder
 from .embedder import Embedder
 from .errors import ModelCallError, ModelTimeoutError, ReplyParseError
 from .llm import LLMClient
 from .loop import run_agent
+from .observability import enable_tracing, init_sentry
 from .refund_tools import build_registry
 from .repository import approve_refund
 from .schemas import ApproveResponse, AskRequest, AskResponse
@@ -28,12 +30,13 @@ async def lifespan(app: FastAPI):
     yield
     await app.state.pool.close()
 
+init_sentry()  # before the app exists: Sentry hooks into the framework as it starts. Off unless SENTRY_DSN is set.
 app = FastAPI(title="Refund agent", lifespan=lifespan)
-
+enable_tracing(app)  # prints each request as a tree of spans; TRACING=off disables
 
 # Dependencies: endpoints ask for these with Depends(...), so tests can swap them out.
 def get_llm() -> LLMClient:
-    return ClaudeCLIClient()
+    return ClaudeCLIClient(model=os.environ.get("CLAUDE_MODEL", DEFAULT_MODEL))
 
 
 @lru_cache
@@ -69,7 +72,6 @@ def get_registry(
 @app.get("/health")
 async def health() -> dict:
     return {"status": "ok"}
-
 
 @app.post("/refund-agent/ask")
 async def ask_refund_agent(
