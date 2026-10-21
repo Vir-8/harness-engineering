@@ -12,6 +12,7 @@ dependencies = [
     "google-genai>=2.31.0",
     "httpx>=0.28.1",
     "langfuse>=5.0.2",
+    "neo4j>=6.4.1",
     "opentelemetry-api>=1.45.1",
     "opentelemetry-instrumentation-fastapi>=0.66b1",
     "opentelemetry-instrumentation-httpx>=0.66b1",

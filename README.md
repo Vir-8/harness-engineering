@@ -23,6 +23,10 @@ src/refund_harness/
   retrieval/        turning text into vectors
     embedder.py       Embedder protocol + FakeEmbedder
     ingest.py         offline job: embed policy chunks and store the vectors
+  graph/            Neo4j: a derived, rebuildable map of who shares a card or an address
+    driver.py         the connection (NEO4J_URI / NEO4J_USER / NEO4J_PASSWORD, dev defaults)
+    source.py         reads one merchant's rows from Postgres (one consistent snapshot)
+    sync.py           MERGE-based, repeatable, all-or-nothing copy into the graph
   evals/            how good is the agent? cases, runner, scorers, judge, reports, Langfuse sink
     cases.py          the hand-labelled cases (loaded from evals/cases.yaml, validated)
     runner.py         runs a case through the real harness at a pinned clock and records everything
@@ -40,6 +44,7 @@ scripts/
   ingest_policies.py  embed the policy chunks with the real Gemini model (needs .env)
   compare_search.py keyword vs semantic search on sample questions, with distances (needs .env)
   try_embedder.py   one live call to the Gemini embedder
+  sync_graph.py     copy merchants from Postgres into the Neo4j graph (no keys needed)
   check_trace_export.py  proves traces leave the process (local collector; no Sentry, no network)
   run_evals.py      run the eval cases for real (--langfuse also stores them as a Langfuse experiment)
   compare_evals.py  compare two saved eval runs
@@ -53,7 +58,7 @@ tests/              one file per topic; helpers.py + conftest.py hold the shared
 ## Setup
 
 ```
-docker compose up -d                 # Postgres + pgvector on port 5433
+docker compose up -d                 # Postgres + pgvector on port 5433, Neo4j on 7474 (browser) / 7687 (Bolt)
 printf 'GEMINI_API_KEY=...\nSENTRY_DSN=...\nLANGFUSE_PUBLIC_KEY=...\nLANGFUSE_SECRET_KEY=...\nLANGFUSE_HOST=https://cloud.langfuse.com\n' > .env   # secrets; .env is git-ignored. Without SENTRY_DSN, Sentry stays off
 ```
 

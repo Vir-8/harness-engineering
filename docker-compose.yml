@@ -16,5 +16,22 @@ services:
       timeout: 3s
       retries: 15
 
+  neo4j:
+    image: neo4j:2026.09.0          # Community Edition (no suffix); a derived read model of Postgres, see Phase 5
+    environment:
+      NEO4J_AUTH: neo4j/refunds-dev # dev-only credentials (8+ characters). Ignored once /data already exists.
+    ports:
+      - "7474:7474"                 # Neo4j Browser: http://localhost:7474
+      - "7687:7687"                 # Bolt, the protocol the Python driver speaks
+    volumes:
+      - neo4jdata:/data
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p refunds-dev 'RETURN 1' || exit 1"]
+      interval: 5s
+      timeout: 10s
+      retries: 20
+      start_period: 15s
+
 volumes:
   pgdata:
+  neo4jdata:
