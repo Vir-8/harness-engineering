@@ -26,7 +26,9 @@ src/refund_harness/
   graph/            Neo4j: a derived, rebuildable map of who shares a card or an address
     driver.py         the connection (NEO4J_URI / NEO4J_USER / NEO4J_PASSWORD, dev defaults)
     source.py         reads one merchant's rows from Postgres (one consistent snapshot)
-    sync.py           MERGE-based, repeatable, all-or-nothing copy into the graph
+    sync.py           MERGE-based, repeatable, all-or-nothing copy into the graph; rebuild_merchant for removed rows
+    risk.py           advisory notes for the human approver (linked accounts); never blocks a refund, never shown to the model
+    bench.py          graph vs SQL, measured on a synthetic merchant (answers must agree before timings count)
   evals/            how good is the agent? cases, runner, scorers, judge, reports, Langfuse sink
     cases.py          the hand-labelled cases (loaded from evals/cases.yaml, validated)
     runner.py         runs a case through the real harness at a pinned clock and records everything
@@ -44,7 +46,8 @@ scripts/
   ingest_policies.py  embed the policy chunks with the real Gemini model (needs .env)
   compare_search.py keyword vs semantic search on sample questions, with distances (needs .env)
   try_embedder.py   one live call to the Gemini embedder
-  sync_graph.py     copy merchants from Postgres into the Neo4j graph (no keys needed)
+  sync_graph.py     copy merchants from Postgres into the Neo4j graph (--rebuild also removes rows deleted in Postgres)
+  bench_graph.py    graph vs SQL benchmark: who is linked to a customer within N steps
   check_trace_export.py  proves traces leave the process (local collector; no Sentry, no network)
   run_evals.py      run the eval cases for real (--langfuse also stores them as a Langfuse experiment)
   compare_evals.py  compare two saved eval runs
@@ -71,3 +74,20 @@ uv run --env-file .env uvicorn refund_harness.app:app --reload   # the API; docs
 uv run --env-file .env python scripts/try_it.py acme "Can I get a refund for A100?"
 uv run --env-file .env python scripts/ingest_policies.py          # after adding policy chunks
 ```
+
+## Measured: graph vs SQL
+
+"Who is linked to this customer through shared cards and addresses, within N steps?" answered four ways on 50,000 synthetic
+customers (about 5 per card and per address), median of 6 random start customers, default Postgres and Neo4j in Docker.
+The engines agree on every answer; times are milliseconds.
+
+| steps | customers reached | SQL joining `orders` | SQL over a links table | Cypher, all trails | Cypher, ANY SHORTEST |
+|---|---|---|---|---|---|
+| 4 | 1,582 | 17 | 11 | 5 | 12 |
+| 5 | 7,402 | 73 | 48 | 11 | 52 |
+| 6 | 26,830 | 307 | 201 | 30 | 260 |
+| 7 | 47,787 | 1,181 | 706 | 67 | 1,358 |
+
+Up to three steps (and in sparse networks even at six) every engine takes a few milliseconds: SQL with indexes is fine.
+The gap opens with depth and density. Caveats: random uniform data, one machine, untuned engines, and a graph is a copy
+that must be loaded (12 to 20 s for 50,000 customers) and kept in step with Postgres. Rerun with `scripts/bench_graph.py`.

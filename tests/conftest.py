@@ -24,7 +24,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 from pydantic import BaseModel  # noqa: E402
 
 from refund_harness.agent.tools import Tool, ToolRegistry  # noqa: E402
-from refund_harness.app import app, get_embedder, get_pool  # noqa: E402
+from refund_harness.app import app, get_embedder, get_graph_driver, get_pool  # noqa: E402
 from refund_harness.data.db import create_pool  # noqa: E402
 from refund_harness.graph.driver import create_graph_driver  # noqa: E402
 from refund_harness.observability import init_sentry  # noqa: E402
@@ -76,6 +76,7 @@ async def refunds(pool):
 async def client(pool):
     app.dependency_overrides[get_pool] = lambda: pool
     app.dependency_overrides[get_embedder] = lambda: FakeEmbedder()  # tests never call Google
+    app.dependency_overrides[get_graph_driver] = lambda: None  # ...and the API tests need no Neo4j
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(headers={"X-Merchant-Id": "acme"}, transport=transport, base_url="http://test") as c:
         yield c

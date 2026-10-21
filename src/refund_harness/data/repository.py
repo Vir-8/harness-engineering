@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 from enum import StrEnum
 
 from psycopg import AsyncConnection
+from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
 
@@ -146,5 +147,34 @@ async def search_policy_by_vector(
             "ORDER BY distance "
             "LIMIT %s",
             (to_vector_literal(query_vector), merchant_id, limit),
+        )
+        return await cur.fetchall()
+
+
+async def get_order_customer_id(pool: AsyncConnectionPool, merchant_id: str, order_id: str) -> str | None:
+    """Who placed this order (None if the order has no customer on record, or does not exist for this merchant)."""
+    async with pool.connection() as conn:
+        cur = await conn.execute("SELECT customer_id FROM orders WHERE merchant_id = %s AND id = %s", (merchant_id, order_id))
+        row = await cur.fetchone()
+        return row["customer_id"] if row else None
+
+
+async def set_risk_flags(pool: AsyncConnectionPool, merchant_id: str, refund_id: int, flags: list[dict]) -> bool:
+    """Store the advisory notes on a refund request. False if no such request exists for this merchant."""
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            "UPDATE refund_requests SET risk_flags = %s WHERE id = %s AND merchant_id = %s RETURNING id",
+            (Jsonb(flags), refund_id, merchant_id),
+        )
+        return await cur.fetchone() is not None
+
+
+async def list_pending_refunds(pool: AsyncConnectionPool, merchant_id: str) -> list[dict]:
+    """What a human approver needs to see: each pending request with its advisory notes (None = never checked)."""
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            "SELECT id AS refund_id, order_id, amount_cents, created_at, risk_flags FROM refund_requests "
+            "WHERE merchant_id = %s AND status = 'pending' ORDER BY id",
+            (merchant_id,),
         )
         return await cur.fetchall()

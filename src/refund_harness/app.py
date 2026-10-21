@@ -6,6 +6,7 @@ from functools import lru_cache
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Path, Request
 from fastapi.responses import JSONResponse
+from neo4j import AsyncDriver
 from psycopg_pool import AsyncConnectionPool
 
 from refund_harness.adapters.claude_cli import DEFAULT_MODEL, ClaudeCLIClient
@@ -19,17 +20,25 @@ from refund_harness.agent.llm import LLMClient
 from refund_harness.agent.loop import MAX_STEPS, run_agent
 from refund_harness.agent.tools import ToolRegistry
 from refund_harness.data.db import create_pool
-from refund_harness.data.repository import approve_refund
+from refund_harness.data.repository import approve_refund, list_pending_refunds
+from refund_harness.graph.driver import create_graph_driver
 from refund_harness.observability import enable_tracing, init_sentry
 from refund_harness.refund_tools import build_registry
 from refund_harness.retrieval.embedder import Embedder
-from refund_harness.schemas import ApproveResponse, AskRequest, AskResponse
+from refund_harness.schemas import (
+    ApproveResponse,
+    AskRequest,
+    AskResponse,
+    PendingRefund,
+)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.pool = await create_pool()
+    app.state.graph_driver = create_graph_driver()  # creating a driver does not connect: Neo4j being down cannot stop startup
     yield
+    await app.state.graph_driver.close()
     await app.state.pool.close()
 
 init_sentry()  # before the app exists: Sentry hooks into the framework as it starts. Off unless SENTRY_DSN is set.
@@ -54,6 +63,10 @@ def get_pool(request: Request) -> AsyncConnectionPool:
     return request.app.state.pool
 
 
+def get_graph_driver(request: Request) -> AsyncDriver | None:
+    return request.app.state.graph_driver
+
+
 def get_merchant_id(x_merchant_id: str = Header(min_length=1)) -> str:
     return x_merchant_id
 
@@ -67,8 +80,9 @@ def get_registry(
     pool: AsyncConnectionPool = Depends(get_pool),
     merchant_id: str = Depends(get_merchant_id),
     embedder: Embedder = Depends(get_embedder),
+    graph_driver: AsyncDriver | None = Depends(get_graph_driver),
 ) -> ToolRegistry:
-    return build_registry(pool=pool, merchant_id=merchant_id, embedder=embedder)
+    return build_registry(pool=pool, merchant_id=merchant_id, embedder=embedder, graph_driver=graph_driver)
 
 
 @app.get("/health")
@@ -87,6 +101,16 @@ async def ask_refund_agent(
         stop_reason=result.stop_reason,
         num_steps=sum(m.role == "assistant" for m in result.messages),
     )
+
+
+@app.get("/refunds/pending")
+async def pending_refunds(
+    pool: AsyncConnectionPool = Depends(get_pool),
+    merchant_id: str = Depends(get_merchant_id),
+    reviewer_id: str = Depends(get_reviewer_id),  # required like on approval: this is a reviewer's screen, not the model's
+) -> list[PendingRefund]:
+    """What a human approver reads before approving: each pending request with its linked-accounts notes."""
+    return [PendingRefund(**row) for row in await list_pending_refunds(pool, merchant_id)]
 
 
 @app.post("/refunds/{refund_id}/approve")

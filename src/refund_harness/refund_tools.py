@@ -3,6 +3,7 @@
 from datetime import datetime, timezone
 from typing import Callable
 
+from neo4j import AsyncDriver
 from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel, Field
 
@@ -14,6 +15,7 @@ from refund_harness.data.repository import (
     search_policy_by_vector,
     submit_refund,
 )
+from refund_harness.graph.risk import attach_risk_flags
 from refund_harness.retrieval.embedder import Embedder
 
 # Policy chunks farther than this (cosine distance) from the question are treated as "not about this".
@@ -41,9 +43,17 @@ def _utc_now() -> datetime:
 
 
 def build_registry(
-    pool: AsyncConnectionPool, merchant_id: str, embedder: Embedder, now: Callable[[], datetime] = _utc_now
+    pool: AsyncConnectionPool,
+    merchant_id: str,
+    embedder: Embedder,
+    now: Callable[[], datetime] = _utc_now,
+    graph_driver: AsyncDriver | None = None,
 ) -> ToolRegistry:
-    """`now` is the clock: the real one in production, a fixed one in tests."""
+    """`now` is the clock: the real one in production, a fixed one in tests.
+
+    `graph_driver`, when given, lets a new refund request be checked for linked accounts (graph/risk.py). That check is
+    advisory and only for the human approver: its result is stored on the request and NEVER put in the tool's reply.
+    """
 
     async def get_order(args: OrderArgs) -> str:
         row = await get_order_row(pool, merchant_id, args.order_id)
@@ -59,6 +69,9 @@ def build_registry(
     async def submit_order_refund(args: RefundArgs) -> str:
         async with pool.connection() as conn:
             result = await submit_refund(conn, merchant_id, args.order_id, args.amount_cents, now())
+        if result.outcome == RefundOutcome.CREATED and graph_driver is not None:
+            # after the transaction has committed, so the order lock is not held while Neo4j is asked; never raises
+            await attach_risk_flags(pool, graph_driver, merchant_id, args.order_id, result.refund_id)
         return format_refund_result(args.order_id, args.amount_cents, result)
 
     return ToolRegistry([
