@@ -113,3 +113,26 @@ async def sync_merchant(pool: AsyncConnectionPool, driver: AsyncDriver, merchant
     await ensure_constraints(driver)
     async with driver.session() as session:
         return await session.execute_write(_load, merchant_id, plan(data))
+
+
+async def _wipe_then_load(
+    tx: AsyncManagedTransaction, merchant_id: str, steps: list[tuple[str, str, list[dict]]]
+) -> dict[str, int]:
+    # One delete per label (not one unlabelled scan), so each can use that label's index.
+    for label in LABELS:
+        await tx.run(f"MATCH (n:{label} {{merchant_id: $merchant_id}}) DETACH DELETE n", merchant_id=merchant_id)  # noqa: S608
+    return await _load(tx, merchant_id, steps)
+
+
+async def rebuild_merchant(pool: AsyncConnectionPool, driver: AsyncDriver, merchant_id: str) -> dict[str, int]:
+    """Make one merchant's slice of the graph EXACTLY what Postgres says: delete it, then reload it.
+
+    sync_merchant only adds and updates, so a row deleted in Postgres stays in the graph. This removes it. Delete and
+    reload are one transaction: readers see the old graph until the new one commits, never an empty or half-built one.
+    Only this merchant's nodes are touched. Run it after removing or merging data, after changing the sync itself,
+    or on a schedule as a safety net against drift.
+    """
+    data = await read_graph_data(pool, merchant_id)
+    await ensure_constraints(driver)
+    async with driver.session() as session:
+        return await session.execute_write(_wipe_then_load, merchant_id, plan(data))

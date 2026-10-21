@@ -4,27 +4,16 @@ Two throwaway merchants (graph-a, graph-b) get the same ring and the same ids; s
 """
 
 import pytest
-from graph_helpers import A, B, World, seed_ring, wipe
+from graph_helpers import A, B
 from neo4j.exceptions import ConstraintError
 
 from refund_harness.graph import sync as sync_module
-from refund_harness.graph.driver import create_graph_driver
+from refund_harness.graph.sync import rebuild_merchant
 
 EXPECTED_SHAPE = {
     "Customer": 6, "Card": 3, "Address": 5, "Order": 6, "Refund": 1,
     "USES": 6, "SHIPS_TO": 6, "PLACED": 6, "HAS_REFUND": 1,
 }
-
-
-@pytest.fixture
-async def world(pool):
-    driver = create_graph_driver()
-    await wipe(pool, driver)  # in case an earlier run crashed halfway
-    await seed_ring(pool, A)
-    await seed_ring(pool, B)
-    yield World(pool, driver)
-    await wipe(pool, driver)
-    await driver.close()
 
 
 # --- what lands in the graph ---
@@ -205,3 +194,61 @@ async def test_if_a_step_fails_nothing_at_all_is_written(world, monkeypatch):
         await world.sync(A)
 
     assert await world.count("MATCH (n {merchant_id: $m}) RETURN count(n) AS n", m=A) == 0  # the nodes loaded before it were undone
+
+
+# --- rebuilding ---
+
+async def test_a_row_deleted_in_postgres_stays_in_the_graph_after_an_ordinary_sync(world):
+    await world.sync(A)
+    async with world.pool.connection() as conn:
+        await conn.execute("DELETE FROM refund_requests WHERE merchant_id = %s", (A,))
+
+    await world.sync(A)
+
+    assert await world.count("MATCH (n:Refund {merchant_id: $m}) RETURN count(n) AS n", m=A) == 1  # MERGE never deletes
+
+
+async def test_a_rebuild_removes_what_no_longer_exists_in_postgres(world):
+    await world.sync(A)
+    async with world.pool.connection() as conn:
+        await conn.execute("DELETE FROM refund_requests WHERE merchant_id = %s", (A,))
+
+    await rebuild_merchant(world.pool, world.driver, A)
+
+    assert await world.count("MATCH (n:Refund {merchant_id: $m}) RETURN count(n) AS n", m=A) == 0
+    without_refunds = {kind: n for kind, n in EXPECTED_SHAPE.items() if kind not in ("Refund", "HAS_REFUND")}
+    assert await world.shape(A) == without_refunds  # kinds with no members are simply absent from the shape
+
+
+async def test_a_rebuild_of_unchanged_data_gives_the_same_graph(world):
+    await world.sync(A)
+
+    await rebuild_merchant(world.pool, world.driver, A)
+
+    assert await world.shape(A) == EXPECTED_SHAPE
+
+
+async def test_a_rebuild_works_on_a_graph_that_was_never_synced(world):
+    await rebuild_merchant(world.pool, world.driver, A)
+
+    assert await world.shape(A) == EXPECTED_SHAPE
+
+
+async def test_rebuilding_one_merchant_leaves_the_other_exactly_as_it_was(world):
+    await world.sync(A)
+    await world.sync(B)
+    before = await world.shape(B)
+
+    await rebuild_merchant(world.pool, world.driver, A)
+
+    assert await world.shape(B) == before == EXPECTED_SHAPE
+
+
+async def test_if_a_rebuild_fails_the_old_graph_is_still_there(world, monkeypatch):
+    await world.sync(A)
+    monkeypatch.setitem(sync_module.RELATIONSHIP_QUERIES, "has_refund", "THIS IS NOT CYPHER")
+
+    with pytest.raises(Exception):
+        await rebuild_merchant(world.pool, world.driver, A)
+
+    assert await world.shape(A) == EXPECTED_SHAPE  # the delete was undone too: the map is not left blank

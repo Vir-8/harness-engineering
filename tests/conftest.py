@@ -8,6 +8,7 @@ os.environ["TRACING"] = "off"
 
 import httpx  # noqa: E402
 import pytest  # noqa: E402
+from graph_helpers import A, B, World, seed_ring, wipe  # noqa: E402
 from helpers import (  # noqa: E402
     FAKE_DSN,
     SANDBOX,
@@ -25,6 +26,7 @@ from pydantic import BaseModel  # noqa: E402
 from refund_harness.agent.tools import Tool, ToolRegistry  # noqa: E402
 from refund_harness.app import app, get_embedder, get_pool  # noqa: E402
 from refund_harness.data.db import create_pool  # noqa: E402
+from refund_harness.graph.driver import create_graph_driver  # noqa: E402
 from refund_harness.observability import init_sentry  # noqa: E402
 from refund_harness.retrieval.embedder import FakeEmbedder  # noqa: E402
 
@@ -115,3 +117,15 @@ def sentry_events():
     init_sentry(FAKE_DSN, export_traces=False, transport=transport)  # export_traces=False: no OTLP exporter on the shared provider
     yield transport
     reset_sentry()
+
+
+@pytest.fixture
+async def world(pool):
+    """Two throwaway merchants (graph-a, graph-b) with the same ring of customers, in Postgres; the graph side is empty."""
+    driver = create_graph_driver()
+    await wipe(pool, driver)  # in case an earlier run crashed halfway
+    await seed_ring(pool, A)
+    await seed_ring(pool, B)
+    yield World(pool, driver)
+    await wipe(pool, driver)
+    await driver.close()

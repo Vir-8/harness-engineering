@@ -2,6 +2,7 @@
 
     uv run python scripts/sync_graph.py                # every merchant
     uv run python scripts/sync_graph.py acme globex    # just these
+    uv run python scripts/sync_graph.py --rebuild      # delete each merchant's slice first, so removed rows disappear too
 
 Needs the two containers up (docker compose up -d). No API keys.
 """
@@ -11,10 +12,10 @@ import sys
 
 from refund_harness.data.db import create_pool
 from refund_harness.graph.driver import create_graph_driver
-from refund_harness.graph.sync import sync_merchant
+from refund_harness.graph.sync import rebuild_merchant, sync_merchant
 
 
-async def main(merchants: list[str]) -> None:
+async def main(merchants: list[str], rebuild: bool) -> None:
     pool = await create_pool()
     try:
         if not merchants:
@@ -23,7 +24,7 @@ async def main(merchants: list[str]) -> None:
                 merchants = [row["id"] for row in await cur.fetchall()]
         async with create_graph_driver() as driver:
             for merchant in merchants:
-                loaded = await sync_merchant(pool, driver, merchant)
+                loaded = await (rebuild_merchant if rebuild else sync_merchant)(pool, driver, merchant)
                 print(f"{merchant}: " + ", ".join(f"{count} {name}" for name, count in loaded.items()))
             records, _, _ = await driver.execute_query("MATCH (n) RETURN labels(n)[0] AS label, count(*) AS n ORDER BY label")
             print("\nin the graph now: " + ", ".join(f"{r['n']} {r['label']}" for r in records))
@@ -32,4 +33,5 @@ async def main(merchants: list[str]) -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main(sys.argv[1:]))
+    arguments = sys.argv[1:]
+    asyncio.run(main([a for a in arguments if a != "--rebuild"], rebuild="--rebuild" in arguments))
