@@ -24,7 +24,8 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 from pydantic import BaseModel  # noqa: E402
 
 from refund_harness.agent.tools import Tool, ToolRegistry  # noqa: E402
-from refund_harness.app import app, get_embedder, get_graph_driver, get_pool  # noqa: E402
+from refund_harness.app import app, get_embedder, get_graph_driver, get_pool, get_redis  # noqa: E402
+from refund_harness.cache.client import create_redis  # noqa: E402
 from refund_harness.data.db import create_pool  # noqa: E402
 from refund_harness.graph.driver import create_graph_driver  # noqa: E402
 from refund_harness.observability import init_sentry  # noqa: E402
@@ -77,6 +78,7 @@ async def client(pool):
     app.dependency_overrides[get_pool] = lambda: pool
     app.dependency_overrides[get_embedder] = lambda: FakeEmbedder()  # tests never call Google
     app.dependency_overrides[get_graph_driver] = lambda: None  # ...and the API tests need no Neo4j
+    app.dependency_overrides[get_redis] = lambda: None  # ...nor Redis (no cache, no rate limit) unless a test asks
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(headers={"X-Merchant-Id": "acme"}, transport=transport, base_url="http://test") as c:
         yield c
@@ -130,3 +132,20 @@ async def world(pool):
     yield World(pool, driver)
     await wipe(pool, driver)
     await driver.close()
+
+
+TEST_REDIS_URL = os.environ.get("TEST_REDIS_URL", "redis://localhost:6379/15")
+
+
+@pytest.fixture
+async def redis_client():
+    """A Redis client on database 15, emptied before and after.
+
+    It FLUSHES, so it refuses to run against any database but 15: the app's own cache lives in database 0.
+    """
+    assert TEST_REDIS_URL.rstrip("/").endswith("/15"), f"tests flush their Redis database, which must be number 15: {TEST_REDIS_URL}"
+    client = create_redis(TEST_REDIS_URL, timeout=1)
+    await client.flushdb()
+    yield client
+    await client.flushdb()
+    await client.aclose()

@@ -21,6 +21,7 @@ dependencies = [
     "psycopg[binary,pool]>=3.3.6",
     "pydantic>=2.14.1",
     "pyyaml>=6.0.3",
+    "redis>=8.1.0",
     "sentry-sdk[opentelemetry-otlp]>=2.72.0",
     "uvicorn[standard]>=0.54.0",
 ]

@@ -37,6 +37,10 @@ src/refund_harness/
     judge_check.py    labelling sheet + agreement between the judge and a human
     report.py         summaries, comparing two runs, saving results
     langfuse_sink.py  runs the cases as a Langfuse experiment
+  cache/            Redis: remembers question vectors, and limits requests per merchant (both fail open)
+    client.py         the connection (REDIS_URL), with short timeouts: a slow cache is worse than none
+    embedding_cache.py  CachedEmbedder: the key holds the model/format identity and a hash of the text, never a merchant
+    rate_limit.py     fixed-window limit per subject, counted atomically; ASK_RATE_LIMIT per minute on /refund-agent/ask
   data/             Postgres
     db.py             connection pool
     repository.py     all SQL: orders, refund requests/approval/eligibility, policy search (keyword + vector)
@@ -61,7 +65,7 @@ tests/              one file per topic; helpers.py + conftest.py hold the shared
 ## Setup
 
 ```
-docker compose up -d                 # Postgres + pgvector on port 5433, Neo4j on 7474 (browser) / 7687 (Bolt)
+docker compose up -d                 # Postgres + pgvector on 5433, Neo4j on 7474 (browser) / 7687 (Bolt), Redis on 6379
 printf 'GEMINI_API_KEY=...\nSENTRY_DSN=...\nLANGFUSE_PUBLIC_KEY=...\nLANGFUSE_SECRET_KEY=...\nLANGFUSE_HOST=https://cloud.langfuse.com\n' > .env   # secrets; .env is git-ignored. Without SENTRY_DSN, Sentry stays off
 ```
 
@@ -91,3 +95,10 @@ The engines agree on every answer; times are milliseconds.
 Up to three steps (and in sparse networks even at six) every engine takes a few milliseconds: SQL with indexes is fine.
 The gap opens with depth and density. Caveats: random uniform data, one machine, untuned engines, and a graph is a copy
 that must be loaded (12 to 20 s for 50,000 customers) and kept in step with Postgres. Rerun with `scripts/bench_graph.py`.
+
+## Measured: the embedding cache
+
+A real Gemini embeddings call took 674 ms; the same question again, from Redis, took 0.5 ms (identical vector, 7.3 KB per
+entry, expires after 24 h). Only the question's vector is cached, which depends on the text and the model and on no
+merchant, so one merchant's question can serve another's; the policy search that follows is not cached and is always
+filtered by merchant. If Redis is down, questions are simply computed as before, and the trace marks the cache as skipped.

@@ -32,6 +32,19 @@ services:
       retries: 20
       start_period: 15s
 
+  redis:
+    image: redis:8
+    # A cache and a rate-limit counter, not a database: nothing is saved to disk, memory is capped, and when it fills
+    # the least recently used keys are dropped (every key we write has a TTL anyway).
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "128mb", "--maxmemory-policy", "allkeys-lru"]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
 volumes:
   pgdata:
   neo4jdata:

@@ -5,6 +5,7 @@ is expressed by a prefix in the text itself, in the formats Google documents.
 """
 
 import asyncio
+import hashlib
 
 from google import genai
 from google.genai import errors as genai_errors
@@ -40,6 +41,16 @@ class GeminiEmbedder:
         self._model = model
         self.dimensions = dimensions
         self._timeout = timeout
+
+    @property
+    def identity(self) -> str:
+        """What decides a question's vector besides the question: the model, its size, and the prefix put in front of it.
+
+        The prefix is hashed (not named by hand), so changing query_prompt changes the identity by itself and stale
+        cached vectors can never be served.
+        """
+        dressing = hashlib.sha256(query_prompt("").encode()).hexdigest()[:8]
+        return f"{self._model}/{self.dimensions}/{dressing}"
 
     def _get_client(self) -> genai.Client:
         # Built on first use, so a missing key only breaks calls that really need embeddings, not app startup.

@@ -23,6 +23,7 @@ class Document:
 
 class Embedder(Protocol):
     dimensions: int
+    identity: str  # everything besides the text that decides the vector (model, size, how the text is dressed up)
 
     async def embed_documents(self, documents: list[Document]) -> list[list[float]]:
         """Embed text that will be stored and searched (policy chunks). One vector per document, same order."""
@@ -42,6 +43,7 @@ class FakeEmbedder:
 
     def __init__(self, dimensions: int = EMBEDDING_DIMENSIONS):
         self.dimensions = dimensions
+        self.identity = f"fake-hash/{dimensions}"
         self.calls: list[str] = []  # every text it was asked to embed, like FakeLLM.calls
 
     async def embed_documents(self, documents: list[Document]) -> list[list[float]]:

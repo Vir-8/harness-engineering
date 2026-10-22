@@ -4,10 +4,11 @@ import os
 from contextlib import asynccontextmanager
 from functools import lru_cache
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Path, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Path, Request, Response
 from fastapi.responses import JSONResponse
 from neo4j import AsyncDriver
 from psycopg_pool import AsyncConnectionPool
+from redis.asyncio import Redis
 
 from refund_harness.adapters.claude_cli import DEFAULT_MODEL, ClaudeCLIClient
 from refund_harness.adapters.gemini_embeddings import GeminiEmbedder
@@ -19,6 +20,9 @@ from refund_harness.agent.errors import (
 from refund_harness.agent.llm import LLMClient
 from refund_harness.agent.loop import MAX_STEPS, run_agent
 from refund_harness.agent.tools import ToolRegistry
+from refund_harness.cache.client import create_redis
+from refund_harness.cache.embedding_cache import CachedEmbedder
+from refund_harness.cache.rate_limit import RateLimiter
 from refund_harness.data.db import create_pool
 from refund_harness.data.repository import approve_refund, list_pending_refunds
 from refund_harness.graph.driver import create_graph_driver
@@ -37,7 +41,9 @@ from refund_harness.schemas import (
 async def lifespan(app: FastAPI):
     app.state.pool = await create_pool()
     app.state.graph_driver = create_graph_driver()  # creating a driver does not connect: Neo4j being down cannot stop startup
+    app.state.redis = create_redis()  # same for Redis: it connects on first use, and every use tolerates it being gone
     yield
+    await app.state.redis.aclose()
     await app.state.graph_driver.close()
     await app.state.pool.close()
 
@@ -55,8 +61,13 @@ def _gemini_embedder() -> GeminiEmbedder:
     return GeminiEmbedder()  # one shared instance, so one SDK client for the whole process
 
 
-def get_embedder() -> Embedder:
-    return _gemini_embedder()
+def get_redis(request: Request) -> Redis | None:
+    return request.app.state.redis
+
+
+def get_embedder(redis: Redis | None = Depends(get_redis)) -> Embedder:
+    embedder = _gemini_embedder()
+    return CachedEmbedder(embedder, redis) if redis is not None else embedder
 
 
 def get_pool(request: Request) -> AsyncConnectionPool:
@@ -67,7 +78,7 @@ def get_graph_driver(request: Request) -> AsyncDriver | None:
     return request.app.state.graph_driver
 
 
-def get_merchant_id(x_merchant_id: str = Header(min_length=1)) -> str:
+def get_merchant_id(x_merchant_id: str = Header(min_length=1, max_length=64)) -> str:
     return x_merchant_id
 
 
@@ -85,11 +96,40 @@ def get_registry(
     return build_registry(pool=pool, merchant_id=merchant_id, embedder=embedder, graph_driver=graph_driver)
 
 
+ASK_LIMIT_PER_MINUTE = 30  # each request is 2 to 3 model calls, so this is the knob that protects the allowance
+
+
+def get_rate_limiter(redis: Redis | None = Depends(get_redis)) -> RateLimiter | None:
+    if redis is None:
+        return None
+    return RateLimiter(redis, limit=int(os.environ.get("ASK_RATE_LIMIT", ASK_LIMIT_PER_MINUTE)), window_s=60)
+
+
+async def enforce_ask_limit(
+    response: Response,
+    merchant_id: str = Depends(get_merchant_id),
+    limiter: RateLimiter | None = Depends(get_rate_limiter),
+) -> None:
+    """Counts each ask against its merchant. Over the limit: 429 with Retry-After, before any model is called."""
+    if limiter is None:
+        return
+    result = await limiter.check("ask", merchant_id)
+    if not result.allowed:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many requests. Please wait a moment and try again.",  # fixed text: nothing internal in it
+            headers={"Retry-After": str(result.retry_after_s)},
+        )
+    if not result.degraded:
+        response.headers["X-RateLimit-Limit"] = str(result.limit)
+        response.headers["X-RateLimit-Remaining"] = str(result.remaining)
+
+
 @app.get("/health")
 async def health() -> dict:
     return {"status": "ok"}
 
-@app.post("/refund-agent/ask")
+@app.post("/refund-agent/ask", dependencies=[Depends(enforce_ask_limit)])
 async def ask_refund_agent(
     req: AskRequest,
     llm: LLMClient = Depends(get_llm),
