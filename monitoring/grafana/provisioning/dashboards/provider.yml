@@ -1,0 +1,7 @@
+# Load every dashboard JSON in /var/lib/grafana/dashboards at startup (edits made in the UI are not saved back).
+apiVersion: 1
+providers:
+  - name: refund-harness
+    type: file
+    options:
+      path: /var/lib/grafana/dashboards

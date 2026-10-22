@@ -1,0 +1,16 @@
+# Prometheus reads ("scrapes") each process's /metrics page every few seconds and keeps the history.
+# The API and the worker run on the host (uv run ...), so the container reaches them through host.docker.internal.
+global:
+  scrape_interval: 5s        # short for a dev box, so a dashboard reacts while you watch; 15-60 s is usual in production
+  evaluation_interval: 5s    # how often the alert rules are checked
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  - job_name: api
+    static_configs:
+      - targets: ["host.docker.internal:8000"]   # uvicorn refund_harness.app:app (default port)
+  - job_name: worker
+    static_configs:
+      - targets: ["host.docker.internal:9101"]   # scripts/run_worker.py (WORKER_METRICS_PORT)

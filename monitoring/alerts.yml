@@ -1,0 +1,36 @@
+# Alert rules: conditions that should get a person's attention. Prometheus shows them at http://localhost:9090/alerts
+# (pending -> firing). Sending them anywhere (Slack, a pager) would need Alertmanager, which this dev setup leaves out.
+# `for:` is how long the condition must hold before it fires, so a single blip does not wake anyone.
+groups:
+  - name: refund-harness
+    rules:
+      - alert: ProcessDown
+        expr: up == 0
+        for: 1m
+        annotations:
+          summary: "{{ $labels.job }} is not answering on /metrics"
+
+      - alert: PayoutsInDeadLetterQueue
+        expr: max(payout_queue_messages{queue="dead_letters", state="waiting"}) > 0
+        for: 1m
+        annotations:
+          summary: "{{ $value }} payout job(s) failed every retry and wait for a person (scripts/queues.py)"
+
+      - alert: PayoutJobsWaitingTooLong
+        # p95 of how long jobs sat on the queue: the signal that workers cannot keep up (scale workers on this)
+        expr: histogram_quantile(0.95, sum by (le) (rate(payout_job_wait_seconds_bucket[5m]))) > 60
+        for: 5m
+        annotations:
+          summary: "Payout jobs wait {{ $value | humanizeDuration }} (p95) before a worker picks them up"
+
+      - alert: HighServerErrorRate
+        expr: |
+          sum(rate(http_requests_total{status=~"5.."}[5m])) / sum(rate(http_requests_total[5m])) > 0.05
+        for: 5m
+        annotations:
+          summary: "{{ $value | humanizePercentage }} of API requests fail with a server error"
+
+      - alert: ModelSpendHigh
+        expr: sum(increase(llm_cost_usd_total[1h])) > 5
+        annotations:
+          summary: "Model calls cost ${{ $value | printf \"%.2f\" }} in the last hour"
