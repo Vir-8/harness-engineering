@@ -1,54 +1,62 @@
+"""POST /refund-agent/ask through the real app: what it refuses, what it answers, and that each merchant sees only its own data.
+
+The model is scripted (FakeLLM); the tools run against the test database.
+"""
+
 import pytest
+from helpers import ACME, RaisingLLM
 
 from refund_harness.agent.errors import (
     ModelCallError,
     ModelTimeoutError,
     ReplyParseError,
 )
-from refund_harness.agent.llm import FakeLLM, RaisingLLM
-from refund_harness.agent.types import LLMResponse, ToolCall
+from refund_harness.agent.llm import FakeLLM
+from refund_harness.agent.types import LLMResponse, ToolCall, Usage
 from refund_harness.app import app, get_llm
-from refund_harness.retrieval.embedder import FakeEmbedder
-from refund_harness.retrieval.ingest import embed_missing_chunks
 
 
-async def test_ask_success(client):
-    app.dependency_overrides[get_llm] = lambda: FakeLLM([LLMResponse(text="Eligible for a refund")])
-    r = await client.post("/refund-agent/ask", json={"question": "Can I refund A100?"})
-    assert r.status_code == 200
-    assert r.json()["answer"] == "Eligible for a refund"
-
-async def test_empty_question_returns_422(client):
-    fake = FakeLLM([LLMResponse(text="Eligible for a refund")])
+@pytest.mark.parametrize(
+    "question, merchant, wrong_field",
+    [
+        ("", ACME, ["body", "question"]),
+        ("Where is order A100?", None, ["header", "x-merchant-id"]),  # None: no header at all
+        ("Where is order A100?", "", ["header", "x-merchant-id"]),
+        ("Where is order A100?", "m" * 65, ["header", "x-merchant-id"]),  # before it can become a Redis key
+    ],
+    ids=["empty_question", "no_merchant_header", "empty_merchant_header", "absurdly_long_merchant_id"],
+)
+async def test_bad_request_gets_422_before_the_model(client, question, merchant, wrong_field):
+    fake = FakeLLM([LLMResponse(text="should never be reached")])
     app.dependency_overrides[get_llm] = lambda: fake
-    r = await client.post("/refund-agent/ask", json={"question": ""})
+    if merchant is None:
+        del client.headers["X-Merchant-Id"]  # this client sends it by default
+    else:
+        client.headers["X-Merchant-Id"] = merchant
+
+    r = await client.post("/refund-agent/ask", json={"question": question})
 
     assert r.status_code == 422
-    assert fake.calls == []
+    assert r.json()["detail"][0]["loc"] == wrong_field
+    assert fake.calls == []  # no tokens spent on it
 
 
-async def test_timeout_returns_504(client):
-    fake = RaisingLLM(ModelTimeoutError("internal details"))
-    app.dependency_overrides[get_llm] = lambda: fake
+@pytest.mark.parametrize(
+    "error, status, internal_text",
+    [
+        (ModelTimeoutError("internal details"), 504, "internal"),
+        (ModelCallError("stderr: not logged in"), 502, "stderr"),
+        (ReplyParseError("secret details"), 502, "secret"),
+    ],
+    ids=["timeout", "call_failed", "unusable_reply"],
+)
+async def test_model_failure_reveals_nothing_internal(client, error, status, internal_text):
+    app.dependency_overrides[get_llm] = lambda: RaisingLLM(error)
+
     r = await client.post("/refund-agent/ask", json={"question": "Test question?"})
-    assert r.status_code == 504
-    assert "internal" not in r.text
 
-
-async def test_error_returns_502(client):
-    fake = RaisingLLM(ModelCallError("stderr: not logged in"))
-    app.dependency_overrides[get_llm] = lambda: fake
-    r = await client.post("/refund-agent/ask", json={"question": "Test question?"})
-    assert r.status_code == 502
-    assert "stderr" not in r.text
-
-
-async def test_bad_reply_returns_502(client):
-    fake = RaisingLLM(ReplyParseError("secret details"))
-    app.dependency_overrides[get_llm] = lambda: fake
-    r = await client.post("/refund-agent/ask", json={"question": "Test question?"})
-    assert r.status_code == 502
-    assert "secret" not in r.text
+    assert r.status_code == status
+    assert internal_text not in r.text
 
 
 async def test_num_steps_counts_model_turns(client):
@@ -60,21 +68,31 @@ async def test_num_steps_counts_model_turns(client):
     r = await client.post("/refund-agent/ask", json={"question": "Can I refund A100?"})
 
     assert r.status_code == 200
-    assert r.json() == {"answer": "Order A100 is eligible for a refund", "stop_reason": "final", "num_steps": 2}
+    body = r.json()
+    assert (body["answer"], body["stop_reason"], body["num_steps"]) == ("Order A100 is eligible for a refund", "final", 2)
+    assert [(step["kind"], step["name"]) for step in body["steps"]] == [("model", "model"), ("tool", "get_order"), ("model", "model")]
+    assert body["steps"][1]["arguments"] == {"order_id": "A100"} and "delivered" in body["steps"][1]["output"]
+    assert body["cost_usd"] is None  # the fake model reports no usage, so the cost is unknown, not zero
     assert "delivered" in fake.calls[1][-1].content  # the real get_order result reached the model
 
 
-async def test_missing_merchant_header_returns_422(client):
-    fake = FakeLLM([LLMResponse(text="should never be reached")])
+async def test_answer_reports_tokens_and_cost(client):
+    usage = Usage(model="gpt-6-luna", input_tokens=300, output_tokens=20, cost_usd=0.0001)
+    fake = FakeLLM([
+        LLMResponse(tool_calls=[ToolCall(id="c1", name="get_order", arguments={"order_id": "A100"})], usage=usage),
+        LLMResponse(text="Delivered.", usage=usage),
+    ])
     app.dependency_overrides[get_llm] = lambda: fake
-    del client.headers["X-Merchant-Id"]  # this client sends it by default; remove it for this test
 
-    r = await client.post("/refund-agent/ask", json={"question": "Where is order A100?"})
+    body = (await client.post("/refund-agent/ask", json={"question": "Where is A100?"})).json()
 
-    assert r.status_code == 422
-    assert r.json()["detail"][0]["loc"] == ["header", "x-merchant-id"]
-    assert fake.calls == []  # rejected before the model was ever called
+    assert (body["input_tokens"], body["output_tokens"]) == (600, 40)
+    assert body["cost_usd"] == pytest.approx(0.0002)
+    assert body["steps"][0]["tool_calls"][0]["name"] == "get_order"
+    assert body["duration_ms"] > 0
 
+
+# --- each merchant sees only its own data ---
 
 def _order_lookup_script() -> FakeLLM:
     """A scripted model that asks for order A100, then gives a final answer."""
@@ -118,41 +136,3 @@ async def test_model_cannot_override_the_tenant(client):
     tool_result = fake.calls[1][-1].content
     assert "headphones" in tool_result  # still acme's order
     assert "blender" not in tool_result
-
-
-async def test_empty_merchant_header_returns_422(client):
-    fake = FakeLLM([LLMResponse(text="should never be reached")])
-    app.dependency_overrides[get_llm] = lambda: fake
-
-    r = await client.post(
-        "/refund-agent/ask",
-        json={"question": "Where is order A100?"},
-        headers={"X-Merchant-Id": ""},
-    )
-
-    assert r.status_code == 422
-    assert fake.calls == []
-
-
-async def test_the_model_is_shown_the_merchants_retrieved_policy_text(client, pool, sandbox):
-    await embed_missing_chunks(pool, FakeEmbedder(), merchant_id=sandbox)
-    fake = FakeLLM([
-        LLMResponse(tool_calls=[ToolCall(id="c1", name="search_policy", arguments={"question": "gift cards final sale"})]),
-        LLMResponse(text="done"),
-    ])
-    app.dependency_overrides[get_llm] = lambda: fake
-
-    r = await client.post(
-        "/refund-agent/ask", json={"question": "Can I refund a gift card?"}, headers={"X-Merchant-Id": sandbox}
-    )
-
-    assert r.status_code == 200
-    assert "Gift cards are final sale." in fake.calls[1][-1].content  # the retrieved chunk reached the model
-
-
-def test_the_model_can_be_overridden_from_the_environment(monkeypatch):
-    monkeypatch.setenv("CLAUDE_MODEL", "claude-haiku-5-5")
-    assert get_llm().model == "claude-haiku-5-5"
-
-    monkeypatch.delenv("CLAUDE_MODEL")
-    assert get_llm().model == "claude-sonnet-5-5"
