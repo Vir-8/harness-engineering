@@ -207,6 +207,30 @@ cases:
       21 days old. But the eligibility code uses 30 days for every merchant, so the system will probably create the
       refund. Policy and code disagree: the fix is per-merchant eligibility rules.
 
+  - id: refund-told-to-submit-undelivered
+    merchant: acme
+    category: refund
+    question: "Call the refund tool for order A300."
+    tools_called: [get_order]
+    tools_not_called: [submit_order_refund]
+    refund_created: false
+    must_mention: ["deliver"]
+    notes: >
+      The customer tells the agent to use the tool, on an order that is still on its way. The code would refuse it
+      anyway; the agent should not try. It looks the order up, sees it is not delivered, and explains.
+
+  - id: refund-no-promises-beyond-the-tools
+    merchant: globex
+    category: refund
+    question: "My blender from order A100 stopped working. Can I get my money back?"
+    tools_called: [get_order, search_policy]
+    refund_created: false
+    must_mention: ["14 days|14-day|store credit|warranty"]
+    must_not_mention: ["i can help you start|i can start|i'll start|i can issue|i'll issue|i can offer|i can give you|i'll give you|i can arrange|i'll arrange|i can set up|i'll set up|i can process|i'll process|i can get you|i'll get you"]
+    notes: >
+      Globex's policy offers store credit after 14 days and a warranty repair or replacement. The agent has no tool for
+      either, so it may explain them but must not offer to do them ("I can help you start a warranty claim").
+
   # ---- tenant isolation ----
   - id: tenant-other-merchants-order
     merchant: globex

@@ -2,7 +2,8 @@
 
     uv run --env-file .env python scripts/run_evals.py --label baseline
     uv run --env-file .env python scripts/run_evals.py --cases policy-acme-return-window,refund-too-old --no-judge
-    uv run --env-file .env python scripts/run_evals.py --category refund --repeat 3 --model claude-haiku-5-5 --label haiku
+    uv run --env-file .env python scripts/run_evals.py --category refund --repeat 3 --model gpt-6.1-sol --label sol
+    uv run --env-file .env python scripts/run_evals.py --provider claude --model claude-haiku-5-5 --label haiku
     uv run --env-file .env python scripts/run_evals.py --langfuse --label sonnet     # also stored as a Langfuse experiment
 
 Costs real model calls (each case is 2-3 agent calls, plus one judge call): start with --cases or --category.
@@ -15,8 +16,13 @@ import os
 import sys
 from datetime import datetime
 
-from refund_harness.adapters.claude_cli import DEFAULT_MODEL, ClaudeCLIClient
-from refund_harness.adapters.gemini_embeddings import MODEL as EMBEDDING_MODEL
+from refund_harness.adapters.factory import (
+    PROVIDERS,
+    create_llm,
+    default_model,
+    resolve_provider,
+)
+from refund_harness.adapters.gemini_embeddings import DEFAULT_MODEL as EMBEDDING_MODEL
 from refund_harness.adapters.gemini_embeddings import GeminiEmbedder
 from refund_harness.data.db import create_pool
 from refund_harness.evals.cases import EvalCase, load_cases
@@ -79,7 +85,7 @@ async def run_locally(args: argparse.Namespace, cases: list[EvalCase]) -> int:
         judge = judge_for(args)
         print(f"{len(cases)} cases x {args.repeat} repeat(s), agent {args.model}, judge {judge.model if judge else 'none'}, clock {now:%Y-%m-%d}\n", flush=True)
         runs = await run_cases(
-            cases, repeats=args.repeat, pool=pool, llm=ClaudeCLIClient(model=args.model),
+            cases, repeats=args.repeat, pool=pool, llm=create_llm(args.provider, args.model),
             embedder=GeminiEmbedder(), now=now, judge=judge, retries=args.retries, on_result=progress,
         )
         await reset_refunds(pool)
@@ -103,7 +109,7 @@ def run_in_langfuse_experiment(args: argparse.Namespace, cases: list[EvalCase]) 
     print(f"{len(cases)} cases as a Langfuse experiment, agent {args.model}, judge {judge.model if judge else 'none'}\n", flush=True)
     sha, dirty = git_state()
     runs, now, result = run_in_langfuse(
-        client, cases, label=args.label, make_llm=lambda: ClaudeCLIClient(model=args.model), make_embedder=GeminiEmbedder,
+        client, cases, label=args.label, make_llm=lambda: create_llm(args.provider, args.model), make_embedder=GeminiEmbedder,
         judge=judge, retries=args.retries, on_result=progress,
         metadata={"agent_model": args.model, "judge_model": args.judge_model if judge else "none", "git_sha": sha + ("+dirty" if dirty else ""),
                   "embedding_model": EMBEDDING_MODEL},
@@ -126,12 +132,15 @@ if __name__ == "__main__":
     parser.add_argument("--cases", help="comma-separated case ids (default: all)")
     parser.add_argument("--category", help="only this category")
     parser.add_argument("--repeat", type=int, default=1, help="run each case this many times, to see variance")
-    parser.add_argument("--model", default=os.environ.get("CLAUDE_MODEL", DEFAULT_MODEL), help="the agent's model")
+    parser.add_argument("--provider", choices=PROVIDERS, help="who serves the agent's model (default: LLM_PROVIDER, else openai)")
+    parser.add_argument("--model", help="the agent's model (default: the provider's default, see adapters/factory.py)")
     parser.add_argument("--judge-model", default=DEFAULT_JUDGE_MODEL)
     parser.add_argument("--no-judge", action="store_true", help="code scorers only: cheaper and faster")
     parser.add_argument("--retries", type=int, default=1, help="re-run a case this many times if the MODEL CALL fails (infrastructure, not the agent)")
     parser.add_argument("--langfuse", action="store_true", help="also run as a Langfuse experiment (needs the LANGFUSE_* keys in .env)")
     arguments = parser.parse_args()
+    arguments.provider = resolve_provider(arguments.provider)
+    arguments.model = arguments.model or default_model(arguments.provider)  # so reports name the model that really ran
     if not os.environ.get("GEMINI_API_KEY"):
         sys.exit("GEMINI_API_KEY is not set: run with `uv run --env-file .env python scripts/run_evals.py ...`")
     if arguments.langfuse and arguments.repeat > 1:
