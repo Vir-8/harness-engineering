@@ -1,0 +1,15 @@
+# What `docker build` never sees. Above all .env: secrets must never be baked into an image, where anyone who can pull
+# it can read them. They are passed in when a container starts (docker-compose.yml: env_file).
+.env
+.git
+.venv
+**/__pycache__
+.pytest_cache
+.ruff_cache
+tests
+evals/results
+load
+monitoring
+db
+Dockerfile
+docker-compose.yml

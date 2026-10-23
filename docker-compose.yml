@@ -1,8 +1,61 @@
+# Two ways to run things:
+#   docker compose up -d                  the infrastructure only; you run the API/worker on your machine (uv run ..., --reload)
+#   docker compose --profile app up -d    everything, the API, worker and fake provider included (built from ./Dockerfile)
+# The app containers publish the same ports as the processes you'd run by hand (8000, 9101, 8100), so Prometheus
+# finds them either way; for the same reason only one of the two can run at a time.
+
+x-app: &app
+  build: .
+  image: refund-harness:dev
+  profiles: ["app"]
+  restart: unless-stopped        # a crash (or the queue not being ready yet at start) just means: start again
+  env_file:
+    - path: .env                 # secrets (GEMINI_API_KEY, SENTRY_DSN, CLAUDE_CODE_OAUTH_TOKEN...), read at start,
+      required: false            # never copied into the image
+  environment:
+    # Inside Docker, every service is reached by its service name, on its container port (not localhost:5433 etc.).
+    DATABASE_URL: postgresql://app:app@db:5432/refunds
+    REDIS_URL: redis://redis:6379/0
+    SQS_ENDPOINT: http://sqs:9324
+    PAYMENTS_URL: http://provider:8100
+    NEO4J_URI: bolt://neo4j:7687
+    LLM_PROVIDER: ${LLM_PROVIDER:-}          # LLM_PROVIDER=fake docker compose ... runs with the stand-in model
+
 services:
+  api:
+    <<: *app
+    ports:
+      - "8000:8000"
+    depends_on:
+      db: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      neo4j: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  worker:
+    <<: *app
+    command: ["python", "scripts/run_worker.py"]
+    ports:
+      - "9101:9101"                 # its /metrics, for Prometheus
+    depends_on:
+      db: {condition: service_healthy}
+      sqs: {condition: service_started}
+      provider: {condition: service_started}
+
+  provider:
+    <<: *app
+    command: ["uvicorn", "refund_harness.payments.fake_provider:app", "--host", "0.0.0.0", "--port", "8100"]
+    ports:
+      - "8100:8100"
+
   db:
     image: pgvector/pgvector:pg17   # Postgres 17 with the pgvector extension available
     environment:
-      POSTGRES_USER: app            # dev-only credentials; Phase 10 moves real ones to Secrets Manager
+      POSTGRES_USER: app            # dev-only credentials: a deployment takes real ones from a secrets manager
       POSTGRES_PASSWORD: app
       POSTGRES_DB: refunds
     ports:
@@ -17,7 +70,7 @@ services:
       retries: 15
 
   neo4j:
-    image: neo4j:2026.09.0          # Community Edition (no suffix); a derived read model of Postgres, see Phase 5
+    image: neo4j:2026.09.0          # Community Edition (no suffix); a derived read model of Postgres (graph/sync.py)
     environment:
       NEO4J_AUTH: neo4j/refunds-dev # dev-only credentials (8+ characters). Ignored once /data already exists.
     ports:
@@ -44,6 +97,41 @@ services:
       interval: 3s
       timeout: 3s
       retries: 10
+
+  sqs:
+    image: softwaremill/elasticmq-native:1.7.1
+    # A local stand-in for Amazon SQS: same API, so boto3 talks to it unchanged (only the endpoint URL differs).
+    # Queues are created by our code (refund_harness.jobs.sqs.create_payout_queues), as they would be on AWS.
+    # Messages live in memory: restarting the container empties every queue.
+    ports:
+      - "9324:9324"                 # the SQS API (see the queues with scripts/queues.py)
+
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    # Scrapes the API (:8000) and the worker (:9101) running on the host, and checks the alert rules.
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=7d"]
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # Docker Desktop has this name already; Linux needs it spelled out
+    ports:
+      - "9090:9090"                 # Prometheus UI: queries, targets, alerts
+
+  grafana:
+    image: grafana/grafana:13.2.4
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"        # dev only: no login, everyone is admin
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/refund-harness.json
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro   # the Prometheus data source + where dashboards are
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"                 # the dashboard: http://localhost:3000
+    depends_on:
+      - prometheus
 
 volumes:
   pgdata:
