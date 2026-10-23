@@ -1,3 +1,4 @@
+import { Analytics } from "@vercel/analytics/next";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { Geist, Geist_Mono } from "next/font/google";
@@ -64,6 +65,8 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
         </header>
         <main className="mx-auto w-full max-w-[1240px] flex-1 px-4 pb-20 pt-8 sm:px-6 sm:pb-24 sm:pt-10">{children}</main>
         <Footer />
+        {/* Vercel Web Analytics: page views by country, page and referrer, without cookies. */}
+        <Analytics />
       </body>
     </html>
   );
