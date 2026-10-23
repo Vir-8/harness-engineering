@@ -1,4 +1,4 @@
-CREATE EXTENSION IF NOT EXISTS vector;   -- used later for policy search
+CREATE EXTENSION IF NOT EXISTS vector;   -- for policy search (07_policy_embeddings.sql)
 
 CREATE TABLE merchants (
     id   TEXT PRIMARY KEY,

@@ -59,7 +59,7 @@ async def wipe(pool: AsyncConnectionPool, driver: AsyncDriver) -> None:
     """Remove every trace of the sandbox merchants, from Postgres (children before parents) and from the graph."""
     async with pool.connection() as conn:
         for table in ("refund_requests", "orders", "addresses", "payment_methods", "customers"):
-            await conn.execute(f"DELETE FROM {table} WHERE merchant_id = ANY(%s)", (list(SANDBOXES),))  # noqa: S608 (fixed names)
+            await conn.execute(f"DELETE FROM {table} WHERE merchant_id = ANY(%s)", (list(SANDBOXES),))
         await conn.execute("DELETE FROM merchants WHERE id = ANY(%s)", (list(SANDBOXES),))
     await driver.execute_query("MATCH (n) WHERE n.merchant_id IN $merchants DETACH DELETE n", merchants=list(SANDBOXES))
 

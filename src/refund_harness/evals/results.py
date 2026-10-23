@@ -7,7 +7,7 @@ class ToolRun(BaseModel):
     name: str
     arguments: dict
     output: str
-    crashed: bool = False
+    failed: bool = False  # it crashed, got invalid arguments, or does not exist
 
 
 class Retrieval(BaseModel):

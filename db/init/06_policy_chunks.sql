@@ -1,6 +1,6 @@
--- Each merchant's own policy text, split into short chunks for search (Phase 2c).
+-- Each merchant's own policy text, split into short chunks for search.
 -- merchant_id is part of every row: one merchant must never see another's policy.
--- An embedding column (pgvector) is added later, once an embeddings provider is chosen.
+-- The embedding column is added in 07_policy_embeddings.sql.
 CREATE TABLE policy_chunks (
     id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     merchant_id TEXT   NOT NULL REFERENCES merchants (id),

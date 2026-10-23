@@ -56,7 +56,7 @@ class RateLimiter:
                 ttl = self.window_s
         except RedisError as error:
             log.warning("rate limiter could not reach Redis (%s: %s); letting the request through", type(error).__name__, error)
-            return RateLimitResult(True, self.limit, self.limit, 0, degraded=True)
+            return RateLimitResult(allowed=True, limit=self.limit, remaining=self.limit, retry_after_s=0, degraded=True)
         return RateLimitResult(
             allowed=count <= self.limit,
             limit=self.limit,

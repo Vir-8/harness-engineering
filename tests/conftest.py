@@ -1,15 +1,21 @@
 import os
+import uuid
 
 # Tests must never report to the real Sentry project, even when run with `--env-file .env`.
 # This has to happen before refund_harness.app is imported, because importing it starts Sentry.
 os.environ.pop("SENTRY_DSN", None)
 # Nor should every test request print a trace tree: tracing is on by default, so switch it off before the import.
 os.environ["TRACING"] = "off"
+# Tests get their OWN database (scripts/create_test_db.sh): they empty and rewrite tables, and the running worker would
+# pay out refunds they approve in the dev database. Set before anything creates a pool, and checked, never the dev one.
+os.environ["DATABASE_URL"] = os.environ.get("TEST_DATABASE_URL", "postgresql://app:app@localhost:5433/refunds_test")
+assert os.environ["DATABASE_URL"].endswith("_test"), "tests must run against a *_test database"
+os.environ.pop("HARNESS_API_KEY", None)  # the API key tests set their own
 
-import httpx  # noqa: E402
-import pytest  # noqa: E402
-from graph_helpers import A, B, World, seed_ring, wipe  # noqa: E402
-from helpers import (  # noqa: E402
+import httpx
+import pytest
+from graph_helpers import A, B, World, seed_ring, wipe
+from helpers import (
     FAKE_DSN,
     SANDBOX,
     SANDBOX_CHUNKS,
@@ -17,19 +23,29 @@ from helpers import (  # noqa: E402
     Refunds,
     reset_sentry,
 )
-from opentelemetry import trace  # noqa: E402
-from opentelemetry.sdk.trace import TracerProvider  # noqa: E402
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor  # noqa: E402
-from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter  # noqa: E402
-from pydantic import BaseModel  # noqa: E402
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from pydantic import BaseModel
 
-from refund_harness.agent.tools import Tool, ToolRegistry  # noqa: E402
-from refund_harness.app import app, get_embedder, get_graph_driver, get_pool, get_redis  # noqa: E402
-from refund_harness.cache.client import create_redis  # noqa: E402
-from refund_harness.data.db import create_pool  # noqa: E402
-from refund_harness.graph.driver import create_graph_driver  # noqa: E402
-from refund_harness.observability import init_sentry  # noqa: E402
-from refund_harness.retrieval.embedder import FakeEmbedder  # noqa: E402
+from refund_harness.agent.tools import Tool, ToolRegistry
+from refund_harness.app import (
+    app,
+    get_embedder,
+    get_graph_driver,
+    get_pool,
+    get_provider,
+    get_redis,
+)
+from refund_harness.cache.client import create_redis
+from refund_harness.data.db import create_pool
+from refund_harness.graph.driver import create_graph_driver
+from refund_harness.jobs.sqs import create_payout_queues, create_sqs_client
+from refund_harness.observability import init_sentry
+from refund_harness.payments.client import PaymentProvider
+from refund_harness.payments.fake_provider import create_app as create_provider_app
+from refund_harness.retrieval.embedder import FakeEmbedder
 
 # Our own spans (the agent loop) use the process-wide tracer provider, which can be set only once per process.
 # Tests set it here, to an in-memory exporter, and read what a test produced through the `spans` fixture.
@@ -69,7 +85,7 @@ async def pool():
 async def refunds(pool):
     """Starts the test with empty refund tables (leftovers would change outcomes) and lets it inspect them."""
     async with pool.connection() as conn:
-        await conn.execute("TRUNCATE TABLE refund_requests, refund_events")
+        await conn.execute("TRUNCATE TABLE refund_requests, refund_events, outbox")
     return Refunds(pool)
 
 
@@ -79,6 +95,7 @@ async def client(pool):
     app.dependency_overrides[get_embedder] = lambda: FakeEmbedder()  # tests never call Google
     app.dependency_overrides[get_graph_driver] = lambda: None  # ...and the API tests need no Neo4j
     app.dependency_overrides[get_redis] = lambda: None  # ...nor Redis (no cache, no rate limit) unless a test asks
+    app.dependency_overrides[get_provider] = lambda: None  # ...nor the payment provider: tests that need it set their own
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(headers={"X-Merchant-Id": "acme"}, transport=transport, base_url="http://test") as c:
         yield c
@@ -149,3 +166,27 @@ async def redis_client():
     yield client
     await client.flushdb()
     await client.aclose()
+
+
+@pytest.fixture
+async def provider():
+    """Our payment client, talking to a fresh fake provider (empty ledger) in this process."""
+    transport = httpx.ASGITransport(app=create_provider_app())
+    client = PaymentProvider(httpx.AsyncClient(transport=transport, base_url="http://provider"))
+    yield client
+    await client.aclose()
+
+
+@pytest.fixture
+def sqs():
+    return create_sqs_client()
+
+
+@pytest.fixture
+def payout_queues(sqs):
+    """A throwaway payouts queue + dead-letter queue (unique names), deleted afterwards. Hidden for 1 s after a
+    receive, so a crashed job comes back quickly; dead-lettered after 3 deliveries."""
+    queues = create_payout_queues(sqs, f"test-payouts-{uuid.uuid4().hex[:12]}", visibility_timeout_s=1, max_receives=3)
+    yield queues
+    sqs.delete_queue(QueueUrl=queues.url)
+    sqs.delete_queue(QueueUrl=queues.dlq_url)

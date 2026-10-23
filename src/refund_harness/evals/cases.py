@@ -5,7 +5,9 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-CASES_FILE = Path(__file__).resolve().parents[3] / "evals" / "cases.yaml"
+from refund_harness.evals import EVALS_DIR
+
+CASES_FILE = EVALS_DIR / "cases.yaml"
 KNOWN_TOOLS = {"get_order", "search_policy", "submit_order_refund"}
 KNOWN_MERCHANTS = {"acme", "globex"}
 CATEGORIES = {"policy", "paraphrase", "order", "refund", "tenant", "abstain", "safety", "multi"}

@@ -1,8 +1,8 @@
 """Graph vs SQL, measured: "who is linked to this customer through shared cards and addresses, within N steps?"
 
 The same question is answered four ways, on a synthetic merchant ('bench') made of random customers who each pay with a
-random card and ship to a random address from pools half the customer count, so about two customers share each card and
-each address. A "step" is one hop from customer to customer through a shared card or address.
+random card and ship to a random address, drawn from pools sized so that about `sharing` customers (2 by default) share
+each card and each address. A "step" is one hop from customer to customer through a shared card or address.
 
   sql-direct   a recursive query that joins the orders table to itself (what you would write with no preparation)
   sql-links    the same recursion over a precomputed (customer, card-or-address) table: closest to a graph's adjacency
@@ -19,11 +19,13 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
+import psycopg.errors
 from neo4j import AsyncDriver, Query
+from neo4j.exceptions import ClientError, TransientError
 from psycopg import AsyncConnection
 from psycopg_pool import AsyncConnectionPool
 
-from refund_harness.graph.sync import LABELS, rebuild_merchant
+from refund_harness.graph.sync import LABELS, rebuild_merchant, sync_merchant
 
 BENCH = "bench"
 ENGINES = ("sql-direct", "sql-links", "cypher-trails", "cypher-shortest")
@@ -42,43 +44,42 @@ async def generate(pool: AsyncConnectionPool, customers: int, seed: float = 0.42
     customers / sharing members. 1 means almost nobody shares; 5 means dense networks where clusters grow fast.
     """
     pool_size = max(int(customers / sharing), 1)
-    async with pool.connection() as conn:
-        async with conn.transaction():
-            await conn.execute("SELECT setseed(%s)", (seed,))
-            await conn.execute("INSERT INTO merchants (id, name) VALUES (%s, %s)", (BENCH, BENCH))
-            await conn.execute(
-                "INSERT INTO customers (merchant_id, id, name) SELECT %s, 'c' || g, 'Customer ' || g FROM generate_series(0, %s) g",
-                (BENCH, customers - 1),
-            )
-            await conn.execute(
-                "INSERT INTO payment_methods (merchant_id, id, fingerprint, last4) "
-                "SELECT %s, 'pm' || g, 'fp' || g, lpad((g %% 10000)::text, 4, '0') FROM generate_series(0, %s) g",
-                (BENCH, pool_size - 1),
-            )
-            await conn.execute(
-                "INSERT INTO addresses (merchant_id, normalized, display) SELECT %s, 'addr ' || g, 'Addr ' || g FROM generate_series(0, %s) g",
-                (BENCH, pool_size - 1),
-            )
-            # the random numbers are drawn ONCE per customer in the inner query: a volatile function in a join
-            # condition would be re-evaluated per candidate row and could not use the index
-            await conn.execute(
-                "INSERT INTO orders (merchant_id, id, item, total_cents, status, customer_id, payment_method_id, shipping_address_id) "
-                "SELECT %(m)s, 'o' || r.g, 'thing', 1000, 'delivered', 'c' || r.g, 'pm' || r.card, a.id "
-                "FROM (SELECT g, floor(random() * %(n)s)::int AS card, floor(random() * %(n)s)::int AS addr "
-                "      FROM generate_series(0, %(last)s) g) r "
-                "JOIN addresses a ON a.merchant_id = %(m)s AND a.normalized = 'addr ' || r.addr",
-                {"m": BENCH, "n": pool_size, "last": customers - 1},
-            )
-            await conn.execute("ANALYZE orders")
+    async with pool.connection() as conn, conn.transaction():
+        await conn.execute("SELECT setseed(%s)", (seed,))
+        await conn.execute("INSERT INTO merchants (id, name) VALUES (%s, %s)", (BENCH, BENCH))
+        await conn.execute(
+            "INSERT INTO customers (merchant_id, id, name) SELECT %s, 'c' || g, 'Customer ' || g FROM generate_series(0, %s) g",
+            (BENCH, customers - 1),
+        )
+        await conn.execute(
+            "INSERT INTO payment_methods (merchant_id, id, fingerprint, last4) "
+            "SELECT %s, 'pm' || g, 'fp' || g, lpad((g %% 10000)::text, 4, '0') FROM generate_series(0, %s) g",
+            (BENCH, pool_size - 1),
+        )
+        await conn.execute(
+            "INSERT INTO addresses (merchant_id, normalized, display) SELECT %s, 'addr ' || g, 'Addr ' || g FROM generate_series(0, %s) g",
+            (BENCH, pool_size - 1),
+        )
+        # the random numbers are drawn ONCE per customer in the inner query: a volatile function in a join
+        # condition would be re-evaluated per candidate row and could not use the index
+        await conn.execute(
+            "INSERT INTO orders (merchant_id, id, item, total_cents, status, customer_id, payment_method_id, shipping_address_id) "
+            "SELECT %(m)s, 'o' || r.g, 'thing', 1000, 'delivered', 'c' || r.g, 'pm' || r.card, a.id "
+            "FROM (SELECT g, floor(random() * %(n)s)::int AS card, floor(random() * %(n)s)::int AS addr "
+            "      FROM generate_series(0, %(last)s) g) r "
+            "JOIN addresses a ON a.merchant_id = %(m)s AND a.normalized = 'addr ' || r.addr",
+            {"m": BENCH, "n": pool_size, "last": customers - 1},
+        )
+        await conn.execute("ANALYZE orders")
 
 
 async def remove_bench(pool: AsyncConnectionPool, driver: AsyncDriver) -> None:
     async with pool.connection() as conn:
         for table in ("refund_requests", "orders", "addresses", "payment_methods", "customers"):
-            await conn.execute(f"DELETE FROM {table} WHERE merchant_id = %s", (BENCH,))  # noqa: S608 (fixed names)
+            await conn.execute(f"DELETE FROM {table} WHERE merchant_id = %s", (BENCH,))  # fixed table names, not input
         await conn.execute("DELETE FROM merchants WHERE id = %s", (BENCH,))
     for label in LABELS:
-        await driver.execute_query(f"MATCH (n:{label} {{merchant_id: $m}}) DETACH DELETE n", m=BENCH)  # noqa: S608
+        await driver.execute_query(f"MATCH (n:{label} {{merchant_id: $m}}) DETACH DELETE n", m=BENCH)
 
 
 # ---------------------------------------------------------------------------------------------------- the queries
@@ -153,8 +154,6 @@ class Context:
 
 
 async def _sql(ctx: Context, query: str, start: str, depth: int, timeout_s: float) -> int:
-    import psycopg.errors
-
     try:
         async with ctx.conn.transaction():
             await ctx.conn.execute("SELECT set_config('statement_timeout', %s, true)", (str(int(timeout_s * 1000)),))
@@ -165,29 +164,31 @@ async def _sql(ctx: Context, query: str, start: str, depth: int, timeout_s: floa
 
 
 async def _cypher(ctx: Context, template: str, start: str, depth: int, timeout_s: float) -> int:
-    from neo4j.exceptions import ClientError, TransientError
-
     query = Query(template.format(hops=2 * depth), timeout=timeout_s)
     try:
         records, _, _ = await ctx.driver.execute_query(query, m=ctx.merchant, id=start)
     except (TransientError, ClientError) as error:
-        if "imed out" in str(error) or "imeout" in str(error) or "TransactionTimedOut" in str(error):
+        if "TransactionTimedOut" in (error.code or ""):  # e.g. Neo.ClientError.Transaction.TransactionTimedOutClientConfiguration
             raise TimedOut from error
         raise
     return records[0]["reached"]
 
 
+_RUNNERS = {
+    "sql-direct": (_sql, SQL_DIRECT),
+    "sql-links": (_sql, SQL_LINKS),
+    "cypher-trails": (_cypher, CYPHER_TRAILS),
+    "cypher-shortest": (_cypher, CYPHER_SHORTEST),
+}
+assert tuple(_RUNNERS) == ENGINES
+
+
 async def reach(ctx: Context, engine: str, start: str, depth: int, timeout_s: float = 30) -> int:
     """How many OTHER customers can be reached from `start` within `depth` customer-to-customer steps."""
-    if engine == "sql-direct":
-        return await _sql(ctx, SQL_DIRECT, start, depth, timeout_s)
-    if engine == "sql-links":
-        return await _sql(ctx, SQL_LINKS, start, depth, timeout_s)
-    if engine == "cypher-trails":
-        return await _cypher(ctx, CYPHER_TRAILS, start, depth, timeout_s)
-    if engine == "cypher-shortest":
-        return await _cypher(ctx, CYPHER_SHORTEST, start, depth, timeout_s)
-    raise ValueError(f"unknown engine {engine!r}")
+    if engine not in _RUNNERS:
+        raise ValueError(f"unknown engine {engine!r}")
+    run, query = _RUNNERS[engine]
+    return await run(ctx, query, start, depth, timeout_s)
 
 
 # ---------------------------------------------------------------------------------------------------- the benchmark
@@ -235,7 +236,7 @@ async def run_benchmark(
     timeout_s: float,
     sharing: float = 2.0,
     engines: tuple[str, ...] = ENGINES,
-    seed: int = 7,
+    start_seed: int = 7,  # which customers the timings start from (the data itself always comes from generate's seed)
     on_progress: Callable[[str], None] = lambda text: None,
 ) -> BenchReport:
     await remove_bench(pool, driver)  # in case an earlier run was interrupted
@@ -244,7 +245,7 @@ async def run_benchmark(
         await generate(pool, customers, sharing=sharing)
         on_progress("loading the graph (first sync)")
         t0 = time.perf_counter()
-        await sync_for_bench(pool, driver)
+        await sync_merchant(pool, driver, BENCH)
         load_s = time.perf_counter() - t0
         on_progress("rebuilding the graph (delete + reload)")
         t0 = time.perf_counter()
@@ -256,7 +257,7 @@ async def run_benchmark(
         ))[0][0]
         report = BenchReport(customers, sharing, starts, timeout_s, load_s, rebuild_s, counts["nodes"], counts["rels"])
 
-        chosen = random.Random(seed).sample(range(customers), min(starts, customers))
+        chosen = random.Random(start_seed).sample(range(customers), min(starts, customers))
         start_ids = [f"c{i}" for i in chosen]
         async with pool.connection() as conn:
             ctx = Context(conn, driver)
@@ -292,12 +293,6 @@ async def run_benchmark(
         await remove_bench(pool, driver)
 
 
-async def sync_for_bench(pool: AsyncConnectionPool, driver: AsyncDriver) -> None:
-    from refund_harness.graph.sync import sync_merchant
-
-    await sync_merchant(pool, driver, BENCH)
-
-
 def _check_agreement(depth: int, answers: dict[str, dict[str, int]], report: BenchReport) -> None:
     """Every engine that finished a start customer must report the same count as every other engine for that customer."""
     starts = set().union(*(a.keys() for a in answers.values())) if answers else set()
@@ -321,16 +316,20 @@ def render(report: BenchReport) -> str:
         suffix = f" ({c.timeouts} timeouts)" if c.timeouts else ""
         return f"{c.median_ms:,.1f}{suffix}"
 
-    reach_row = ["median customers reached"] + [
-        f"{next((by[(e, d)].median_reach for e in engines if by[(e, d)].median_reach is not None), float('nan')):,.0f}" for d in depths
-    ]
+    def median_reached(depth: int) -> str:  # every engine that finished agrees, so the first one's answer will do
+        reached = [by[(e, depth)].median_reach for e in engines if by[(e, depth)].median_reach is not None]
+        return f"{reached[0]:,.0f}" if reached else "-"
+
+    reach_row = ["median customers reached"] + [median_reached(d) for d in depths]
     header = ["median ms, by steps"] + [f"{d} step{'s' if d > 1 else ''}" for d in depths]
     rows = [header] + [[e] + [cell(e, d) for d in depths] for e in engines] + [reach_row]
     widths = [max(len(r[i]) for r in rows) for i in range(len(header))]
     table = "\n".join("  ".join(value.ljust(widths[i]) if i == 0 else value.rjust(widths[i]) for i, value in enumerate(r)) for r in rows)
     lines = [
-        f"{report.customers:,} customers, about {report.sharing:g} per card and per address; "
-        f"{report.graph_nodes:,} nodes and {report.graph_relationships:,} relationships in the graph",
+        (
+            f"{report.customers:,} customers, about {report.sharing:g} per card and per address; "
+            f"{report.graph_nodes:,} nodes and {report.graph_relationships:,} relationships in the graph"
+        ),
         f"{report.starts} random start customers per cell; timeout {report.timeout_s:g}s",
         f"loading the graph from Postgres: {report.load_s:.1f}s   rebuilding it (delete + reload): {report.rebuild_s:.1f}s",
         "",

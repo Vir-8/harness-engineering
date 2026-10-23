@@ -18,7 +18,7 @@ from refund_harness.agent.errors import (
 )
 from refund_harness.retrieval.embedder import EMBEDDING_DIMENSIONS, Document
 
-MODEL = "gemini-embedding-2"
+DEFAULT_MODEL = "gemini-embedding-2"
 
 
 def document_prompt(document: Document) -> str:
@@ -33,14 +33,14 @@ class GeminiEmbedder:
     def __init__(
         self,
         client: genai.Client | None = None,  # tests pass a fake; otherwise built on first use from GEMINI_API_KEY
-        model: str = MODEL,
+        model: str = DEFAULT_MODEL,
         dimensions: int = EMBEDDING_DIMENSIONS,
-        timeout: float = 30,
+        timeout_s: float = 30,
     ):
         self._client = client
         self._model = model
         self.dimensions = dimensions
-        self._timeout = timeout
+        self._timeout_s = timeout_s
 
     @property
     def identity(self) -> str:
@@ -49,8 +49,8 @@ class GeminiEmbedder:
         The prefix is hashed (not named by hand), so changing query_prompt changes the identity by itself and stale
         cached vectors can never be served.
         """
-        dressing = hashlib.sha256(query_prompt("").encode()).hexdigest()[:8]
-        return f"{self._model}/{self.dimensions}/{dressing}"
+        prefix_hash = hashlib.sha256(query_prompt("").encode()).hexdigest()[:8]
+        return f"{self._model}/{self.dimensions}/{prefix_hash}"
 
     def _get_client(self) -> genai.Client:
         # Built on first use, so a missing key only breaks calls that really need embeddings, not app startup.
@@ -75,7 +75,7 @@ class GeminiEmbedder:
         """
         contents = [types.Content(parts=[types.Part(text=prompt)]) for prompt in prompts]
         try:
-            async with asyncio.timeout(self._timeout):
+            async with asyncio.timeout(self._timeout_s):
                 response = await self._get_client().aio.models.embed_content(
                     model=self._model,
                     contents=contents,

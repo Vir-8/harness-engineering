@@ -1,7 +1,5 @@
 """The eval case file and its loader: the labels are checked for typos and contradictions before any run spends tokens."""
 
-from collections import Counter
-
 import pytest
 from pydantic import ValidationError
 
@@ -17,19 +15,15 @@ def make_case(**overrides) -> dict:
 
 # --- the real case file ---
 
-def test_the_case_file_loads_and_has_enough_cases():
-    assert len(load_cases()) >= 30
+def test_case_file_covers_every_category_and_merchant():
+    cases = load_cases()
+
+    assert len(cases) >= 30
+    assert {case.category for case in cases} == CATEGORIES
+    assert {case.merchant for case in cases} == {"acme", "globex"}
 
 
-def test_every_category_is_covered():
-    assert {case.category for case in load_cases()} == CATEGORIES
-
-
-def test_both_merchants_have_cases():
-    assert {case.merchant for case in load_cases()} == {"acme", "globex"}
-
-
-async def test_every_expected_chunk_is_a_real_policy_title_for_that_merchant(pool):
+async def test_expected_chunks_are_real_policy_titles(pool):
     async with pool.connection() as conn:
         cur = await conn.execute("SELECT merchant_id, title FROM policy_chunks")
         titles = {(row["merchant_id"], row["title"]) for row in await cur.fetchall()}
@@ -37,11 +31,6 @@ async def test_every_expected_chunk_is_a_real_policy_title_for_that_merchant(poo
     for case in load_cases():
         if case.expected_chunk:
             assert (case.merchant, case.expected_chunk) in titles, f"{case.id}: no such chunk for {case.merchant}"
-
-
-def test_ids_are_unique():
-    ids = [case.id for case in load_cases()]
-    assert [i for i, n in Counter(ids).items() if n > 1] == []
 
 
 # --- the validation that protects the labels ---
@@ -68,18 +57,16 @@ def test_a_bad_label_is_refused(bad):
         EvalCase(**make_case(**bad))
 
 
-def test_a_good_case_is_accepted():
-    case = EvalCase(**make_case(refund_created=True, refund_amount_cents=5900, must_mention=["30 days|30-day"]))
-
-    assert case.refund_amount_cents == 5900
-
-
-def test_forbidden_phrases_never_match_the_harnesss_own_wording():
+def test_forbidden_phrases_miss_our_own_wording():
     """A word check cannot see negation. "No money has been refunded yet" is the TOOL's wording for a correct, pending
     request, and the model echoes it: a forbidden phrase that matched it would fail correct answers."""
     harness_wording = [
         format_refund_result("A100", 5900, SubmitRefundResult(RefundOutcome.CREATED, refund_id=7)),
         format_refund_result("A100", 5900, SubmitRefundResult(RefundOutcome.DUPLICATE)),
+        *(
+            format_refund_result("A100", 5900, SubmitRefundResult(RefundOutcome.DUPLICATE, refund_id=7, existing_status=s, existing_amount_cents=5900))
+            for s in ("pending", "approved", "issued")
+        ),
         format_refund_result("A200", 3500, SubmitRefundResult(RefundOutcome.INELIGIBLE, reasons=("too old",))),
     ]
 

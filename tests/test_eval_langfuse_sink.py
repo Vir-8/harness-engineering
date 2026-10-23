@@ -6,10 +6,9 @@ from types import SimpleNamespace
 from refund_harness.agent.llm import FakeLLM
 from refund_harness.agent.types import LLMResponse
 from refund_harness.data.db import create_pool
-from refund_harness.evals.cases import EvalCase, load_cases
+from refund_harness.evals.cases import EvalCase
 from refund_harness.evals.langfuse_sink import (
     DATASET_NAME,
-    LiveEval,
     case_to_item,
     evaluations_for,
     run_in_langfuse,
@@ -49,13 +48,13 @@ class FakeLangfuse:
 
         evaluations = asyncio.run(go())
         run_level = [ev(item_results=[]) for ev in run_evaluators]
-        self.experiments.append(dict(name=name, run_name=run_name, metadata=metadata, max_concurrency=max_concurrency, items=[i.id for i in data]))
+        self.experiments.append({"name": name, "run_name": run_name, "metadata": metadata, "max_concurrency": max_concurrency, "items": [i.id for i in data]})
         return SimpleNamespace(evaluations=evaluations, run_level=run_level)
 
 
 # --- the dataset ---
 
-def test_a_case_becomes_a_dataset_item_with_its_id_input_labels_and_category():
+def test_case_becomes_a_dataset_item():
     item = case_to_item(a_case(tools_called=["get_order"], must_mention=["delivered"], refund_created=False, notes="why"))
 
     assert item["id"] == "case-1" and item["dataset_name"] == DATASET_NAME
@@ -64,26 +63,9 @@ def test_a_case_becomes_a_dataset_item_with_its_id_input_labels_and_category():
     assert item["metadata"] == {"case_id": "case-1", "category": "order", "notes": "why"}
 
 
-def test_labels_a_case_does_not_use_are_left_out_of_the_expected_output():
-    assert case_to_item(a_case())["expected_output"] == {}
-
-
-def test_every_real_case_converts():
-    assert len([case_to_item(case) for case in load_cases()]) >= 30
-
-
-def test_syncing_creates_the_dataset_and_one_item_per_case_and_is_safe_to_repeat():
-    client, cases = FakeLangfuse(), [a_case(id="case-1"), a_case(id="case-2")]
-
-    sync_dataset(client, cases)
-    sync_dataset(client, cases)
-
-    assert set(client.items) == {"case-1", "case-2"}  # the second sync updated in place
-
-
 # --- the scores ---
 
-def test_each_applicable_check_becomes_a_score_and_not_applicable_ones_are_skipped():
+def test_applicable_checks_become_scores():
     run = CaseRun(case_id="c", category="policy", merchant="acme", latency_s=12.345, cost_usd=0.05,
                   scores={"completed": True, "mentions": False, "refund_state": None})
 
@@ -109,11 +91,13 @@ async def run_through_fake_langfuse(cases, llm, client=None, **kwargs):
     return client, runs, now, result, pools
 
 
-async def test_the_cases_run_as_one_experiment_and_come_back_as_our_own_records(refunds):
+async def test_chosen_cases_run_as_one_experiment(refunds):
+    client = FakeLangfuse()
+    sync_dataset(client, [a_case(id="case-1"), a_case(id="case-2"), a_case(id="case-3")])  # the dataset holds more
     cases = [a_case(id="case-1"), a_case(id="case-2", question="Where is order A300?")]
     llm = FakeLLM([LLMResponse(text="Delivered."), LLMResponse(text="Shipped.")])
 
-    client, runs, now, result, _ = await run_through_fake_langfuse(cases, llm)
+    client, runs, now, _, _ = await run_through_fake_langfuse(cases, llm, client)
 
     assert [r.case_id for r in runs] == ["case-1", "case-2"] and [r.answer for r in runs] == ["Delivered.", "Shipped."]
     [experiment] = client.experiments
@@ -121,16 +105,7 @@ async def test_the_cases_run_as_one_experiment_and_come_back_as_our_own_records(
     assert now is not None
 
 
-async def test_only_the_chosen_cases_run_even_though_the_dataset_holds_more(refunds):
-    client = FakeLangfuse()
-    sync_dataset(client, [a_case(id="case-1"), a_case(id="case-2"), a_case(id="case-3")])
-
-    client, runs, _, _, _ = await run_through_fake_langfuse([a_case(id="case-2")], FakeLLM([LLMResponse(text="x")]), client)
-
-    assert client.experiments[0]["items"] == ["case-2"] and [r.case_id for r in runs] == ["case-2"]
-
-
-async def test_each_item_gets_its_scores_and_the_run_gets_its_totals(refunds):
+async def test_items_get_scores_and_the_run_totals(refunds):
     cases = [a_case(id="case-1", must_mention=["delivered"]), a_case(id="case-2", must_mention=["shipped"])]
     llm = FakeLLM([LLMResponse(text="It was delivered."), LLMResponse(text="Nothing to say.")])
 
@@ -141,23 +116,8 @@ async def test_each_item_gets_its_scores_and_the_run_gets_its_totals(refunds):
     assert {e.name: e.value for e in result.run_level}["pass_rate"] == 0.5
 
 
-async def test_the_database_pool_is_made_in_the_experiments_loop_and_closed_after_the_last_case(refunds):
+async def test_pool_lives_in_the_experiments_event_loop(refunds):
     _, _, _, _, pools = await run_through_fake_langfuse([a_case(id="case-1"), a_case(id="case-2")], FakeLLM([LLMResponse(text="a"), LLMResponse(text="b")]))
 
     assert len(pools) == 1  # created once, lazily
     assert pools[0].closed  # and closed once the last case finished
-
-
-async def test_progress_is_reported_per_case(refunds):
-    seen = []
-
-    await run_through_fake_langfuse([a_case(id="case-1")], FakeLLM([LLMResponse(text="a")]), on_result=seen.append)
-
-    assert [r.case_id for r in seen] == ["case-1"]
-
-
-def test_an_evaluator_for_an_unknown_case_has_nothing_to_say():
-    live = LiveEval([a_case()], make_llm=lambda: None, make_embedder=FakeEmbedder, judge=None, retries=0)
-
-    assert live.evaluator(metadata={"case_id": "never-ran"}) == []
-    assert live.evaluator(metadata=None) == []

@@ -30,33 +30,28 @@ def tool(name: str, output: str = "ok", **arguments) -> ToolRun:
         ("Returns are not accepted.", "30 days", False),
     ],
 )
-def test_matching_ignores_case_curly_quotes_and_accepts_alternatives(answer, pattern, expected):
+def test_matching_ignores_case_and_curly_quotes(answer, pattern, expected):
     assert found(answer, pattern) is expected
 
 
 # --- one scorer at a time ---
 
-def test_a_finished_run_counts_as_completed_and_a_failed_one_does_not():
+def test_only_a_finished_run_is_completed():
     assert score_run(a_case(), a_run())["completed"] is True
     assert score_run(a_case(), a_run(error="ModelCallError: down", stop_reason=None))["completed"] is False
     assert score_run(a_case(), a_run(stop_reason="max_steps"))["completed"] is False
 
 
-def test_required_tools_must_all_have_been_used():
-    case = a_case(tools_called=["get_order", "search_policy"])
+def test_required_and_forbidden_tools():
+    case = a_case(tools_called=["get_order", "search_policy"], tools_not_called=["submit_order_refund"])
 
     assert score_run(case, a_run(tools=[tool("get_order"), tool("search_policy")]))["tools_called"] is True
     assert score_run(case, a_run(tools=[tool("get_order")]))["tools_called"] is False
-
-
-def test_forbidden_tools_must_not_have_been_used():
-    case = a_case(tools_not_called=["submit_order_refund"])
-
     assert score_run(case, a_run(tools=[tool("get_order")]))["tools_not_called"] is True
     assert score_run(case, a_run(tools=[tool("submit_order_refund")]))["tools_not_called"] is False
 
 
-def test_the_agent_found_the_chunk_when_its_search_returned_that_title():
+def test_agent_found_the_expected_chunk():
     case = a_case(expected_chunk="Return window")
 
     found_it = a_run(tools=[tool("search_policy", "Return window\nItems may be returned within 30 days.")])
@@ -80,16 +75,11 @@ def test_retrieval_hit_at_1_and_hit_at_3():
     assert (score_run(case, absent)["retrieval_hit_at_1"], score_run(case, absent)["retrieval_hit_at_3"]) == (False, False)
 
 
-def test_required_words_must_all_appear():
-    case = a_case(must_mention=["30 days|30-day", "refund"])
+def test_required_and_forbidden_words():
+    case = a_case(must_mention=["30 days|30-day", "refund"], must_not_mention=["has been refunded|been issued"])
 
     assert score_run(case, a_run(answer="A full refund within 30 days."))["mentions"] is True
     assert score_run(case, a_run(answer="Within 30 days."))["mentions"] is False
-
-
-def test_forbidden_words_must_not_appear():
-    case = a_case(must_not_mention=["has been refunded|been issued"])
-
     assert score_run(case, a_run(answer="Your request is pending approval."))["no_forbidden_words"] is True
     assert score_run(case, a_run(answer="Your refund has been refunded."))["no_forbidden_words"] is False
 
@@ -106,19 +96,13 @@ def test_forbidden_words_must_not_appear():
         ({"refund_created": True, "refund_amount_cents": 5900}, [5900, 5900], False),  # a second request is also wrong
     ],
 )
-def test_the_refund_state_is_checked_against_the_database(case_fields, refunds, expected):
+def test_refund_state_is_checked_in_the_database(case_fields, refunds, expected):
     assert score_run(a_case(**case_fields), a_run(refunds_cents=refunds))["refund_state"] is expected
 
 
 # --- the judge's verdicts ---
 
-def test_evidence_support_comes_from_the_judge_and_is_not_applicable_without_one():
-    assert score_run(a_case(), a_run())["evidence_supported"] is None
-    assert score_run(a_case(), a_run(judge=JudgeVerdict(supported=True, declines=False, reason="")))["evidence_supported"] is True
-    assert score_run(a_case(), a_run(judge=JudgeVerdict(supported=False, declines=False, reason="")))["evidence_supported"] is False
-
-
-def test_abstention_needs_a_decline_that_is_also_free_of_unsupported_claims():
+def test_abstention_needs_a_clean_decline():
     case = a_case(should_abstain=True)
 
     clean_decline = a_run(judge=JudgeVerdict(supported=True, declines=True, reason=""))
@@ -133,20 +117,18 @@ def test_abstention_needs_a_decline_that_is_also_free_of_unsupported_claims():
 
 # --- putting scores together ---
 
-def test_checks_a_case_does_not_ask_for_are_not_applicable():
+def test_unasked_checks_are_not_applicable():
     scores = score_run(a_case(), a_run())
 
     assert scores["tools_called"] is None and scores["refund_state"] is None and scores["retrieval_hit_at_1"] is None
-
-
-def test_a_run_passes_when_nothing_failed_and_not_applicable_does_not_count_as_a_failure():
+    assert scores["evidence_supported"] is None  # no judge, no verdict
     assert a_run(scores={"completed": True, "mentions": None}).passed is True
     assert a_run(scores={"completed": True, "mentions": False}).passed is False
 
 
 # --- a run that failed has nothing to score ---
 
-def test_an_errored_run_is_scored_on_completion_only_so_the_other_checks_are_not_polluted():
+def test_errored_run_is_scored_on_completion_only():
     case = a_case(tools_called=["search_policy"], must_mention=["30 days"], refund_created=False)
 
     scores = score_run(case, a_run(error="ModelCallError: claude exited 1", stop_reason=None, answer=""))

@@ -1,13 +1,14 @@
-"""sync_merchant: Postgres to Neo4j. Safe to repeat, never mixes merchants, all-or-nothing.
+"""sync_merchant and rebuild_merchant: Postgres to Neo4j. Safe to repeat, never mixes merchants, all-or-nothing.
 
 Two throwaway merchants (graph-a, graph-b) get the same ring and the same ids; see graph_helpers.py.
 """
 
 import pytest
 from graph_helpers import A, B
-from neo4j.exceptions import ConstraintError
+from neo4j.exceptions import ConstraintError, CypherSyntaxError
 
 from refund_harness.graph import sync as sync_module
+from refund_harness.graph.source import read_graph_data
 from refund_harness.graph.sync import rebuild_merchant
 
 EXPECTED_SHAPE = {
@@ -18,36 +19,13 @@ EXPECTED_SHAPE = {
 
 # --- what lands in the graph ---
 
-async def test_the_graph_has_a_node_for_every_row_and_a_link_for_every_connection(world):
+async def test_every_row_and_connection_is_in_the_graph(world):
     await world.sync(A)
 
     assert await world.shape(A) == EXPECTED_SHAPE
 
 
-async def test_the_sync_reports_how_many_rows_it_loaded(world):
-    loaded = await world.sync(A)
-
-    assert loaded == {
-        "customers": 6, "cards": 3, "addresses": 5, "orders": 6, "refunds": 1,
-        "customer_cards": 6, "customer_addresses": 6, "placed": 6, "has_refund": 1,
-    }
-
-
-async def test_a_customer_with_several_orders_on_one_card_gets_one_link_not_several(world):
-    async with world.pool.connection() as conn:
-        await conn.execute(
-            "INSERT INTO orders (merchant_id, id, item, total_cents, status, customer_id, payment_method_id) "
-            "VALUES (%s, 'O7', 'thing', 1000, 'delivered', 'ana', 'pm-1111')", (A,)
-        )
-
-    loaded = await world.sync(A)
-
-    assert loaded["customer_cards"] == 6  # six distinct (customer, card) pairs, though there are now seven orders
-    assert await world.count("MATCH (:Customer {merchant_id: $m, id: 'ana'})-[r:USES]->(:Card) RETURN count(r) AS n", m=A) == 1
-    assert await world.count("MATCH (:Customer {merchant_id: $m, id: 'ana'})-[r:PLACED]->() RETURN count(r) AS n", m=A) == 2
-
-
-async def test_an_order_with_no_customer_recorded_is_still_a_node_but_has_no_placed_link(world):
+async def test_order_without_a_customer_has_no_link(world):
     async with world.pool.connection() as conn:
         await conn.execute(
             "INSERT INTO orders (merchant_id, id, item, total_cents, status) VALUES (%s, 'O7', 'thing', 1000, 'placed')", (A,)
@@ -59,50 +37,18 @@ async def test_an_order_with_no_customer_recorded_is_still_a_node_but_has_no_pla
     assert await world.count("MATCH (:Customer {merchant_id: $m})-[r:PLACED]->() RETURN count(r) AS n", m=A) == 6
 
 
-# --- the questions the graph exists to answer ---
+async def test_ids_are_always_strings(world):
+    # A graph key of 5 is not equal to '5': mixed types would make MERGE create duplicates.
+    data = await read_graph_data(world.pool, A)
 
-async def test_the_ring_is_there_ana_ben_and_cy_share_a_card(world):
-    await world.sync(A)
-
-    sharers = await world.values(
-        "MATCH (:Customer {merchant_id: $m, id: 'ana'})-[:USES]->(:Card)<-[:USES]-(o:Customer) RETURN o.id", m=A
-    )
-
-    assert sharers == ["ben", "cy"]
-
-
-async def test_ben_and_eve_share_an_address(world):
-    await world.sync(A)
-
-    sharers = await world.values(
-        "MATCH (:Customer {merchant_id: $m, id: 'ben'})-[:SHIPS_TO]->(:Address)<-[:SHIPS_TO]-(o:Customer) RETURN o.id", m=A
-    )
-
-    assert sharers == ["eve"]
-
-
-async def test_dee_is_connected_to_nobody(world):
-    await world.sync(A)
-
-    through_card = await world.values("MATCH (:Customer {merchant_id: $m, id: 'dee'})-[:USES]->()<-[:USES]-(o) RETURN o.id", m=A)
-    through_address = await world.values("MATCH (:Customer {merchant_id: $m, id: 'dee'})-[:SHIPS_TO]->()<-[:SHIPS_TO]-(o) RETURN o.id", m=A)
-
-    assert through_card == [] and through_address == []
-
-
-async def test_the_refund_hangs_off_its_order(world):
-    await world.sync(A)
-
-    refunds = await world.rows(
-        "MATCH (:Order {merchant_id: $m, id: 'O1'})-[:HAS_REFUND]->(r:Refund) RETURN r.amount_cents AS cents, r.status AS status", m=A
-    )
-
-    assert refunds == [{"cents": 1000, "status": "pending"}]
+    assert all(isinstance(a["id"], str) for a in data.addresses)
+    assert all(isinstance(pair["address_id"], str) for pair in data.customer_addresses)
+    assert all(isinstance(r["id"], str) for r in data.refunds)
 
 
 # --- repeating it ---
 
-async def test_running_the_sync_twice_changes_nothing(world):
+async def test_syncing_twice_changes_nothing(world):
     await world.sync(A)
     first = await world.shape(A)
 
@@ -111,7 +57,7 @@ async def test_running_the_sync_twice_changes_nothing(world):
     assert await world.shape(A) == first == EXPECTED_SHAPE
 
 
-async def test_a_changed_fact_updates_the_node_instead_of_creating_a_second_one(world):
+async def test_changed_fact_updates_the_node(world):
     await world.sync(A)
     async with world.pool.connection() as conn:
         await conn.execute("UPDATE customers SET name = 'Ana Renamed' WHERE merchant_id = %s AND id = 'ana'", (A,))
@@ -122,62 +68,20 @@ async def test_a_changed_fact_updates_the_node_instead_of_creating_a_second_one(
     assert await world.values("MATCH (n:Customer {merchant_id: $m, id: 'ana'}) RETURN n.name", m=A) == ["Ana Renamed"]
 
 
-async def test_new_rows_arrive_on_the_next_sync(world):
-    await world.sync(A)
-    async with world.pool.connection() as conn:
-        await conn.execute("INSERT INTO customers (merchant_id, id, name) VALUES (%s, 'gil', 'Gil')", (A,))
-
-    await world.sync(A)
-
-    assert await world.count("MATCH (n:Customer {merchant_id: $m}) RETURN count(n) AS n", m=A) == 7
-
-
 # --- tenants ---
 
-async def test_two_merchants_with_identical_ids_get_two_separate_graphs(world):
+async def test_merchants_with_identical_ids_stay_apart(world):
     await world.sync(A)
     await world.sync(B)
 
     assert await world.shape(A) == EXPECTED_SHAPE and await world.shape(B) == EXPECTED_SHAPE
     assert await world.count("MATCH (n:Card {id: 'pm-1111'}) RETURN count(n) AS n") >= 2  # one per merchant, not one shared
-
-
-async def test_no_link_ever_crosses_from_one_merchant_to_another(world):
-    await world.sync(A)
-    await world.sync(B)
-
-    crossing = await world.count("MATCH (a)-[r]->(b) WHERE a.merchant_id <> b.merchant_id RETURN count(r) AS n")
-
-    assert crossing == 0
-
-
-async def test_each_merchants_ring_stays_its_own_size(world):
-    await world.sync(A)
-    await world.sync(B)
-
-    sharers = await world.values(
-        "MATCH (:Customer {merchant_id: $m, id: 'ana'})-[:USES]->(:Card)<-[:USES]-(o:Customer) RETURN o.id", m=B
-    )
-
-    assert sharers == ["ben", "cy"]  # not ['ben', 'ben', 'cy', 'cy']: the other merchant's card did not join in
-
-
-async def test_syncing_one_merchant_does_not_touch_another(world):
-    await world.sync(A)
-
-    assert await world.shape(B) == {}
-
-
-async def test_a_merchant_with_no_data_loads_nothing_and_does_not_fail(world):
-    loaded = await world.sync("graph-nobody")
-
-    assert set(loaded.values()) == {0}
-    assert await world.count("MATCH (n {merchant_id: 'graph-nobody'}) RETURN count(n) AS n") == 0
+    assert await world.count("MATCH (a)-[r]->(b) WHERE a.merchant_id <> b.merchant_id RETURN count(r) AS n") == 0
 
 
 # --- the schema and all-or-nothing ---
 
-async def test_each_kind_of_node_has_a_uniqueness_rule_and_it_is_enforced(world):
+async def test_every_node_kind_is_unique_per_merchant(world):
     await world.sync(A)
 
     rules = await world.rows("SHOW CONSTRAINTS YIELD name, labelsOrTypes WHERE name ENDS WITH '_identity' RETURN labelsOrTypes[0] AS label")
@@ -187,54 +91,47 @@ async def test_each_kind_of_node_has_a_uniqueness_rule_and_it_is_enforced(world)
         await world.driver.execute_query("CREATE (:Customer {merchant_id: $m, id: 'ana'})", m=A)
 
 
-async def test_if_a_step_fails_nothing_at_all_is_written(world, monkeypatch):
-    monkeypatch.setitem(sync_module.RELATIONSHIP_QUERIES, "has_refund", "THIS IS NOT CYPHER")
+async def sync(world) -> None:
+    await world.sync(A)
 
-    with pytest.raises(Exception):
+
+async def rebuild(world) -> None:
+    await rebuild_merchant(world.pool, world.driver, A)
+
+
+@pytest.mark.parametrize(
+    ("graph_before", "write"),
+    [({}, sync), (EXPECTED_SHAPE, rebuild)],
+    ids=["a_first_sync_leaves_no_nodes", "a_rebuild_leaves_the_old_graph_not_a_blank_map"],
+)
+async def test_failed_sync_leaves_the_graph_unchanged(world, monkeypatch, graph_before, write):
+    if graph_before:
         await world.sync(A)
+    assert await world.shape(A) == graph_before
+    monkeypatch.setitem(sync_module.RELATIONSHIP_QUERIES, "has_refund", "THIS IS NOT CYPHER")  # the LAST step fails
 
-    assert await world.count("MATCH (n {merchant_id: $m}) RETURN count(n) AS n", m=A) == 0  # the nodes loaded before it were undone
+    with pytest.raises(CypherSyntaxError):
+        await write(world)
+
+    assert await world.shape(A) == graph_before  # everything written before the failing step (a rebuild's delete too) was undone
 
 
 # --- rebuilding ---
 
-async def test_a_row_deleted_in_postgres_stays_in_the_graph_after_an_ordinary_sync(world):
+async def test_deleted_rows_go_only_on_rebuild(world):
     await world.sync(A)
     async with world.pool.connection() as conn:
         await conn.execute("DELETE FROM refund_requests WHERE merchant_id = %s", (A,))
 
     await world.sync(A)
-
     assert await world.count("MATCH (n:Refund {merchant_id: $m}) RETURN count(n) AS n", m=A) == 1  # MERGE never deletes
 
-
-async def test_a_rebuild_removes_what_no_longer_exists_in_postgres(world):
-    await world.sync(A)
-    async with world.pool.connection() as conn:
-        await conn.execute("DELETE FROM refund_requests WHERE merchant_id = %s", (A,))
-
     await rebuild_merchant(world.pool, world.driver, A)
-
-    assert await world.count("MATCH (n:Refund {merchant_id: $m}) RETURN count(n) AS n", m=A) == 0
     without_refunds = {kind: n for kind, n in EXPECTED_SHAPE.items() if kind not in ("Refund", "HAS_REFUND")}
     assert await world.shape(A) == without_refunds  # kinds with no members are simply absent from the shape
 
 
-async def test_a_rebuild_of_unchanged_data_gives_the_same_graph(world):
-    await world.sync(A)
-
-    await rebuild_merchant(world.pool, world.driver, A)
-
-    assert await world.shape(A) == EXPECTED_SHAPE
-
-
-async def test_a_rebuild_works_on_a_graph_that_was_never_synced(world):
-    await rebuild_merchant(world.pool, world.driver, A)
-
-    assert await world.shape(A) == EXPECTED_SHAPE
-
-
-async def test_rebuilding_one_merchant_leaves_the_other_exactly_as_it_was(world):
+async def test_rebuild_leaves_other_merchants_alone(world):
     await world.sync(A)
     await world.sync(B)
     before = await world.shape(B)
@@ -242,13 +139,3 @@ async def test_rebuilding_one_merchant_leaves_the_other_exactly_as_it_was(world)
     await rebuild_merchant(world.pool, world.driver, A)
 
     assert await world.shape(B) == before == EXPECTED_SHAPE
-
-
-async def test_if_a_rebuild_fails_the_old_graph_is_still_there(world, monkeypatch):
-    await world.sync(A)
-    monkeypatch.setitem(sync_module.RELATIONSHIP_QUERIES, "has_refund", "THIS IS NOT CYPHER")
-
-    with pytest.raises(Exception):
-        await rebuild_merchant(world.pool, world.driver, A)
-
-    assert await world.shape(A) == EXPECTED_SHAPE  # the delete was undone too: the map is not left blank

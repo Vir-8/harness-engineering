@@ -30,11 +30,13 @@ from opentelemetry.sdk.trace.export import (
 )
 from opentelemetry.trace import StatusCode
 from sentry_sdk.integrations.google_genai import GoogleGenAIIntegration
+from sentry_sdk.integrations.openai import OpenAIIntegration
 from sentry_sdk.integrations.otlp import OTLPIntegration
 
 from refund_harness.agent.types import LLMResponse, Message, ToolCall, Usage
 
-PRIVATE_BY_DEFAULT = {
+# What Sentry may collect: nothing about users, request bodies, SQL values or model input and output.
+SENTRY_DATA_COLLECTION = {
     "user_info": False,
     "cookies": {"mode": "off"},
     "url_query_params": {"mode": "off"},
@@ -51,7 +53,7 @@ def tracing_enabled() -> bool:
 
 
 def init_sentry(
-    dsn: str | None = None, *, export_traces: bool = True, collector_url: str | None = None, **overrides
+    dsn: str | None = None, *, export_traces: bool = True, **overrides
 ) -> None:
     """Start error reporting, and trace export to Sentry. With no DSN (tests, a local run without .env) Sentry stays off.
 
@@ -59,24 +61,23 @@ def init_sentry(
     own tracing must stay off (no traces_sample_rate), or everything would be traced twice.
 
     Call before the FastAPI app is created: Sentry hooks into the framework when it starts.
-    `collector_url` sends traces to your own OpenTelemetry collector instead of Sentry (scripts/check_trace_export.py
-    uses it). `export_traces=False` and `overrides` exist so tests can avoid the network and pass a fake transport.
+    `export_traces=False` and `overrides` exist so tests can avoid the network and pass a fake transport.
     """
     dsn = dsn or os.environ.get("SENTRY_DSN")
     if not dsn:
         return
-    otlp = OTLPIntegration(setup_otlp_traces_exporter=export_traces, collector_url=collector_url)
+    otlp = OTLPIntegration(setup_otlp_traces_exporter=export_traces)
     integrations = [otlp] if tracing_enabled() else []
     sentry_sdk.init(
         dsn=dsn,
         environment=os.environ.get("APP_ENV", "development"),
-        data_collection=PRIVATE_BY_DEFAULT,
+        data_collection=SENTRY_DATA_COLLECTION,
         include_local_variables=False,
         integrations=integrations,
-        # Sentry reports a Gemini failure by itself, from inside the SDK call, as a bare error with no idea which tool
-        # it belongs to. The loop reports the same failure with that context (report_tool_crash), so one failure
-        # would become two Issues. This integration would also add AI spans that duplicate ours.
-        disabled_integrations=[GoogleGenAIIntegration()],
+        # Sentry's provider-SDK integrations report a failure by themselves, from inside the SDK call, as a bare error
+        # with no idea which tool or run it belongs to. The loop reports the same failure with that context, so one
+        # failure would become two Issues; they would also add AI spans that duplicate ours.
+        disabled_integrations=[GoogleGenAIIntegration(), OpenAIIntegration()],
         **overrides,
     )
 
@@ -168,9 +169,9 @@ def setup_tracing(
     PsycopgInstrumentor().instrument(tracer_provider=provider)
     HTTPXClientInstrumentor().instrument(tracer_provider=provider)
     # ASGI "send"/"receive" spans are empty noise for us, so they are excluded. So is /health: monitors ping it
-    # constantly, and a trace per ping would drown out the real requests.
+    # constantly, and a trace per ping would drown out the real requests. Same for /metrics: Prometheus reads it every 5 s.
     FastAPIInstrumentor.instrument_app(
-        app, tracer_provider=provider, exclude_spans=["send", "receive"], excluded_urls="/health"
+        app, tracer_provider=provider, exclude_spans=["send", "receive"], excluded_urls="/health,/metrics"
     )
     return provider
 
@@ -194,7 +195,7 @@ def enable_tracing(app: FastAPI) -> None:
 MAX_CONTENT_CHARS = 8000  # one conversation can get long; a span attribute should not grow without limit
 
 
-def content_tracing_on() -> bool:
+def content_tracing_enabled() -> bool:
     return os.environ.get("TRACE_CONTENT", "on") != "off"
 
 
@@ -223,7 +224,7 @@ def genai_messages(messages: list[Message]) -> list[dict]:
 
 def record_chat_content(span: trace.Span, sent: list[Message], reply: LLMResponse) -> None:
     """On a `chat` span: the conversation the model was shown, and what it answered."""
-    if not content_tracing_on():
+    if not content_tracing_enabled():
         return
     finish_reason = "tool_call" if reply.tool_calls else "stop"
     reply_message = {"role": "assistant", "parts": _parts(reply.text, reply.tool_calls), "finish_reason": finish_reason}
@@ -233,7 +234,7 @@ def record_chat_content(span: trace.Span, sent: list[Message], reply: LLMRespons
 
 def record_tool_call(span: trace.Span, call: ToolCall) -> None:
     """On an `execute_tool` span, while it is open and before the tool runs: what the model asked for."""
-    if not content_tracing_on():
+    if not content_tracing_enabled():
         return
     span.set_attribute("gen_ai.tool.call.id", call.id)
     span.set_attribute("gen_ai.tool.call.arguments", _as_attribute(call.arguments))
@@ -241,14 +242,14 @@ def record_tool_call(span: trace.Span, call: ToolCall) -> None:
 
 def record_tool_result(span: trace.Span, result: str) -> None:
     """On the same span, after the tool succeeded. A tool that crashed never gets a result recorded."""
-    if content_tracing_on():
+    if content_tracing_enabled():
         span.set_attribute("gen_ai.tool.call.result", _as_attribute(result))
 
 
 # --- tokens and cost ---
 
 def record_usage(span: trace.Span, usage: Usage | None) -> None:
-    """On a `chat` span: which model answered, how many tokens it used, and what the CLI says it cost.
+    """On a `chat` span: which model answered, how many tokens it used, and its cost at published prices.
 
     Not content, so the TRACE_CONTENT switch does not apply. The input total already includes the cached tokens,
     as the conventions require: Sentry subtracts the cached counts to price the rest.
@@ -276,8 +277,8 @@ def record_run_totals(span: trace.Span, usages: list[Usage]) -> None:
         return
     span.set_attribute("app.input_tokens", sum(u.input_tokens for u in usages))
     span.set_attribute("app.output_tokens", sum(u.output_tokens for u in usages))
-    costs = [u.cost_usd for u in usages if u.cost_usd is not None]
-    if costs:
+    costs = [u.cost_usd for u in usages]
+    if None not in costs:  # a partial sum would understate the cost, so no total unless every call's price is known
         span.set_attribute("app.cost_usd", round(sum(costs), 6))
 
 
@@ -294,6 +295,6 @@ def report_tool_crash(call: ToolCall, error: Exception) -> None:
         scope.set_tag("tool.name", call.name)
         scope.set_tag("error.type", type(error).__name__)
         scope.fingerprint = ["tool-crash", call.name, type(error).__name__]
-        arguments = call.arguments if content_tracing_on() else sorted(call.arguments)
+        arguments = call.arguments if content_tracing_enabled() else sorted(call.arguments)
         scope.set_context("tool_call", {"id": call.id, "name": call.name, "arguments": arguments})
         sentry_sdk.capture_exception(error)

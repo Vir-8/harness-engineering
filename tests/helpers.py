@@ -7,8 +7,8 @@ Seed data these tests rely on (db/init/02_seed.sql):
 """
 
 import json
+from collections.abc import Callable
 from datetime import datetime, timedelta
-from typing import Callable
 
 import sentry_sdk
 from psycopg_pool import AsyncConnectionPool
@@ -17,7 +17,7 @@ from sentry_sdk.transport import Transport
 from refund_harness.data.repository import (
     approve_refund,
     get_order_row,
-    request_refund,
+    insert_refund_request,
     submit_refund,
 )
 
@@ -25,6 +25,7 @@ ACME = "acme"
 GLOBEX = "globex"
 A100_TOTAL_CENTS = 5900
 DAY = timedelta(days=1)
+REVIEWER = {"X-Reviewer-Id": "reviewer-1"}  # the operator endpoints need a reviewer (a stand-in for real auth)
 
 # A throwaway merchant for tests that write policy chunks or embeddings. It never touches the seed merchants,
 # whose embeddings come from the real Gemini model and cost money to recreate.
@@ -55,12 +56,24 @@ def fixed_clock(moment: datetime) -> Callable[[], datetime]:
 
 async def request(pool: AsyncConnectionPool, merchant_id: str, order_id: str, amount_cents: int) -> int | None:
     async with pool.connection() as conn:
-        return await request_refund(conn, merchant_id, order_id, amount_cents)
+        return await insert_refund_request(conn, merchant_id, order_id, amount_cents)
 
 
 async def approve(pool: AsyncConnectionPool, refund_id: int, actor: str | None = "reviewer-1", merchant_id: str = ACME) -> bool:
     async with pool.connection() as conn:
         return await approve_refund(conn, merchant_id, refund_id, actor)
+
+
+async def approved_refund(pool: AsyncConnectionPool) -> int:
+    """An approved refund for acme's A100 (which also puts its payout job in the outbox)."""
+    refund_id = await request(pool, ACME, "A100", A100_TOTAL_CENTS)
+    await approve(pool, refund_id)
+    return refund_id
+
+
+async def payouts(provider) -> list[dict]:
+    """The fake provider's ledger: every payout it made."""
+    return (await provider._http.get("/v1/refunds")).json()
 
 
 async def submit(pool: AsyncConnectionPool, merchant_id: str, order_id: str, amount_cents: int, now: datetime):
@@ -92,13 +105,15 @@ class Refunds:
     async def events_for(self, refund_id: int) -> list[dict]:
         return await self._fetch("SELECT event, actor FROM refund_events WHERE refund_id = %s", (refund_id,))
 
-    async def set_status(self, refund_id: int, status: str) -> None:
-        """Test setup only: put a refund into a state, without going through the code under test."""
-        await self._fetch_nothing("UPDATE refund_requests SET status = %s WHERE id = %s", (status, refund_id))
 
-    async def _fetch_nothing(self, sql: str, params: tuple) -> None:
-        async with self._pool.connection() as conn:
-            await conn.execute(sql, params)
+class RaisingLLM:
+    """A model whose every call fails with the given exception."""
+
+    def __init__(self, exc: Exception):
+        self.exc = exc
+
+    async def complete(self, messages, tools):
+        raise self.exc
 
 
 FAKE_DSN = "https://publickey@o0.ingest.sentry.io/0"

@@ -23,6 +23,7 @@ class GraphData:
     customer_addresses: list[dict] = field(default_factory=list)  # customer_id, address_id: distinct pairs seen on orders
 
 
+# Each key is a GraphData field name: read_graph_data fills the field of the same name.
 QUERIES = {
     "customers": "SELECT id, name FROM customers WHERE merchant_id = %s ORDER BY id",
     "cards": "SELECT id, last4 FROM payment_methods WHERE merchant_id = %s ORDER BY id",
@@ -32,14 +33,18 @@ QUERIES = {
         "SELECT id::text AS id, order_id, amount_cents, status FROM refund_requests WHERE merchant_id = %s ORDER BY id"
     ),
     # DISTINCT: a customer with five orders on one card is ONE link, not five.
-    "customer_cards": (
-        "SELECT DISTINCT customer_id, payment_method_id AS card_id FROM orders "
-        "WHERE merchant_id = %s AND customer_id IS NOT NULL AND payment_method_id IS NOT NULL ORDER BY 1, 2"
-    ),
-    "customer_addresses": (
-        "SELECT DISTINCT customer_id, shipping_address_id::text AS address_id FROM orders "
-        "WHERE merchant_id = %s AND customer_id IS NOT NULL AND shipping_address_id IS NOT NULL ORDER BY 1, 2"
-    ),
+    "customer_cards": """
+        SELECT DISTINCT customer_id, payment_method_id AS card_id
+        FROM orders
+        WHERE merchant_id = %s AND customer_id IS NOT NULL AND payment_method_id IS NOT NULL
+        ORDER BY 1, 2
+    """,
+    "customer_addresses": """
+        SELECT DISTINCT customer_id, shipping_address_id::text AS address_id
+        FROM orders
+        WHERE merchant_id = %s AND customer_id IS NOT NULL AND shipping_address_id IS NOT NULL
+        ORDER BY 1, 2
+    """,
 }
 
 
@@ -50,10 +55,9 @@ async def read_graph_data(pool: AsyncConnectionPool, merchant_id: str) -> GraphD
     another, and the graph would then contain a link whose other end is absent.
     """
     data = GraphData()
-    async with pool.connection() as conn:
-        async with conn.transaction():
-            await conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")  # must be the first statement
-            for name, query in QUERIES.items():
-                cur = await conn.execute(query, (merchant_id,))
-                setattr(data, name, await cur.fetchall())
+    async with pool.connection() as conn, conn.transaction():
+        await conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")  # must be the first statement
+        for name, query in QUERIES.items():
+            cur = await conn.execute(query, (merchant_id,))
+            setattr(data, name, await cur.fetchall())
     return data

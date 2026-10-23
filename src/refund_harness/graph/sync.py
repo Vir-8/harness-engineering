@@ -120,7 +120,7 @@ async def _wipe_then_load(
 ) -> dict[str, int]:
     # One delete per label (not one unlabelled scan), so each can use that label's index.
     for label in LABELS:
-        await tx.run(f"MATCH (n:{label} {{merchant_id: $merchant_id}}) DETACH DELETE n", merchant_id=merchant_id)  # noqa: S608
+        await tx.run(f"MATCH (n:{label} {{merchant_id: $merchant_id}}) DETACH DELETE n", merchant_id=merchant_id)
     return await _load(tx, merchant_id, steps)
 
 

@@ -23,14 +23,34 @@ MANY_LINKED_CUSTOMERS = 2  # this many other customers in the network is worth a
 MANY_LINKED_REFUNDS = 2  # this many refund requests among those customers is worth a note
 
 # A customer step is two relationships (customer to card or address, then on to the next customer).
-LINKED_CUSTOMERS = (
-    "MATCH (a:Customer {{merchant_id: $m, id: $id}})-[:USES|SHIPS_TO*1..{hops}]-(b:Customer) "
-    "WHERE b <> a RETURN DISTINCT b.id AS id"
-)
-LINKED_REFUNDS = (
-    "MATCH (c:Customer {merchant_id: $m})-[:PLACED]->(:Order {merchant_id: $m})-[:HAS_REFUND]->(r:Refund {merchant_id: $m}) "
-    "WHERE c.id IN $ids RETURN count(r) AS n"
-)
+LINKED_CUSTOMERS = """
+    MATCH (a:Customer {{merchant_id: $m, id: $id}})-[:USES|SHIPS_TO*1..{hops}]-(b:Customer)
+    WHERE b <> a
+    RETURN DISTINCT b.id AS id
+"""
+# How each linked customer is reached: one shortest path per customer, with the cards and addresses along it, and how many
+# refund requests that customer has. This is what the approver reads to judge whether the link means anything.
+LINK_PATHS = """
+    MATCH (a:Customer {{merchant_id: $m, id: $id}})
+    UNWIND $ids AS linked_id
+    MATCH (b:Customer {{merchant_id: $m, id: linked_id}})
+    MATCH p = shortestPath((a)-[:USES|SHIPS_TO*..{hops}]-(b))
+    OPTIONAL MATCH (b)-[:PLACED]->(:Order)-[:HAS_REFUND]->(r:Refund)
+    WITH b, p, count(r) AS refunds
+    RETURN b.id AS customer_id, b.name AS name, refunds,
+           // what lies between the two customers, in order: the cards and addresses they share
+           [n IN nodes(p)[1..-1] | CASE
+               WHEN n:Card THEN {{kind: 'card', label: n.last4}}
+               WHEN n:Address THEN {{kind: 'address', label: n.normalized}}
+               ELSE {{kind: 'customer', label: n.name}}
+           END] AS via
+    ORDER BY size(via), name
+"""
+LINKED_REFUNDS = """
+    MATCH (c:Customer {merchant_id: $m})-[:PLACED]->(:Order {merchant_id: $m})-[:HAS_REFUND]->(r:Refund {merchant_id: $m})
+    WHERE c.id IN $ids
+    RETURN count(r) AS n
+"""
 
 GRAPH_UNAVAILABLE = {
     "code": "graph_unavailable",
@@ -42,13 +62,17 @@ NO_CUSTOMER = {
 }
 
 
-def flags_from(linked_customers: int, linked_refunds: int, steps: int = RISK_STEPS) -> list[dict]:
-    """Turn the two counts into notes. Pure, so the thresholds are easy to test and to change."""
+def flags_from(linked_customers: int, linked_refunds: int, links: list[dict] | None = None) -> list[dict]:
+    """Turn the two counts into notes. Pure, so the thresholds are easy to test and to change.
+
+    `links` (how each linked customer is connected) goes on the linked-customers note, for the approver to inspect.
+    """
     flags = []
     if linked_customers >= MANY_LINKED_CUSTOMERS:
         flags.append({
             "code": "linked_customers",
-            "message": f"Linked to {linked_customers} other customers by a shared card or address, within {steps} steps.",
+            "message": f"Linked to {linked_customers} other customers by a shared card or address, within {RISK_STEPS} steps.",
+            "links": links or [],
         })
     if linked_refunds >= MANY_LINKED_REFUNDS:
         flags.append({
@@ -69,13 +93,19 @@ async def assess_customer(driver: AsyncDriver, merchant_id: str, customer_id: st
             )
             linked = [record["id"] for record in records]
             refunds = 0
+            links: list[dict] = []
             if linked:
                 records, _, _ = await driver.execute_query(LINKED_REFUNDS, m=merchant_id, ids=linked)
                 refunds = records[0]["n"]
-    except Exception:  # noqa: BLE001  (anything at all: this check is advisory and must not break the refund)
+            if len(linked) >= MANY_LINKED_CUSTOMERS:  # only a note shows the links, so only then are they worth looking up
+                records, _, _ = await driver.execute_query(
+                    LINK_PATHS.format(hops=2 * RISK_STEPS), m=merchant_id, id=customer_id, ids=linked
+                )
+                links = [record.data() for record in records]
+    except Exception:  # anything at all: this check is advisory and must not break the refund
         log.warning("risk check could not run for customer %r of %r", customer_id, merchant_id, exc_info=True)
         return [GRAPH_UNAVAILABLE]
-    return flags_from(len(linked), refunds)
+    return flags_from(len(linked), refunds, links=links)
 
 
 async def attach_risk_flags(
@@ -89,5 +119,5 @@ async def attach_risk_flags(
         customer_id = await get_order_customer_id(pool, merchant_id, order_id)
         flags = await assess_customer(driver, merchant_id, customer_id)
         await set_risk_flags(pool, merchant_id, refund_id, flags)
-    except Exception:  # noqa: BLE001
+    except Exception:  # same: a refund request is never lost to its advisory check
         log.exception("could not store risk flags for refund %s of %r", refund_id, merchant_id)

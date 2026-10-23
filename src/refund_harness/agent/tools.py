@@ -1,6 +1,7 @@
 """Tools: a name, a description, a Pydantic model for arguments, and a function."""
 
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from pydantic import BaseModel
 

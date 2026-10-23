@@ -1,80 +1,43 @@
-"""Policy search over each merchant's own policy chunks.
+"""Vector search over each merchant's own policy chunks (search_policy_by_vector): nearest in meaning, one merchant only.
 
-search_policy_keyword matches WORDS (Postgres full-text search: lowercased, stemmed, filler words dropped).
-Seed data (db/init/06): acme's return window is 30 days, globex's is 14. Both have a chunk titled "Return window".
+These tests embed the sandbox merchant's chunks with FakeEmbedder (word overlap), so they check the SQL and the
+tenant scoping offline. Whether the REAL Gemini vectors capture meaning is what the evals' retrieval check measures.
 """
 
 import pytest
-from helpers import ACME, GLOBEX
+from helpers import ACME
 
-from refund_harness.data.repository import search_policy_keyword
-
-
-async def titles(pool, merchant_id: str, query: str, limit: int = 3) -> list[str]:
-    return [chunk["title"] for chunk in await search_policy_keyword(pool, merchant_id, query, limit)]
+from refund_harness.data.repository import search_policy_by_vector
+from refund_harness.retrieval.embedder import FakeEmbedder
+from refund_harness.retrieval.ingest import embed_missing_chunks
 
 
-# --- what keyword search finds ---
-
-async def test_a_word_in_the_policy_finds_its_chunk(pool):
-    assert await titles(pool, ACME, "cancelled") == ["Cancellations"]
-
-
-async def test_different_forms_of_a_word_match_thanks_to_stemming(pool):
-    # the policy says "returned"; the customer asks about "returns"
-    assert "Return window" in await titles(pool, ACME, "returns")
+@pytest.fixture
+async def embedder(pool, sandbox):
+    """The sandbox chunks, embedded; returns the embedder so a test can embed its question the same way."""
+    embedder = FakeEmbedder()
+    await embed_missing_chunks(pool, embedder, merchant_id=sandbox)
+    return embedder
 
 
-async def test_each_result_carries_the_title_and_the_text(pool):
-    chunk = (await search_policy_keyword(pool, ACME, "cancelled"))[0]
-
-    assert chunk["title"] == "Cancellations"
-    assert "has not shipped" in chunk["body"]
+async def search(pool, embedder, merchant_id: str, question: str, limit: int = 3) -> list[dict]:
+    return await search_policy_by_vector(pool, merchant_id, await embedder.embed_query(question), limit)
 
 
-async def test_a_chunk_that_mentions_the_word_more_ranks_first(pool):
-    # "Shipping costs" says shipping twice (title and text); other chunks mention it once
-    assert (await titles(pool, ACME, "shipping"))[0] == "Shipping costs"
+async def test_results_are_closest_first(pool, sandbox, embedder):
+    results = await search(pool, embedder, sandbox, "returned within 30 days", limit=4)
+
+    distances = [r["distance"] for r in results]
+    assert distances == sorted(distances)
+    assert results[0]["title"] == "Return window"
 
 
-async def test_limit_caps_the_number_of_results(pool):
-    assert len(await titles(pool, ACME, "refund", limit=2)) == 2
+async def test_chunks_without_vectors_are_skipped(pool, sandbox):
+    # the sandbox fixture alone leaves every chunk un-embedded
+    assert await search(pool, FakeEmbedder(), sandbox, "gift cards") == []
 
 
-# --- what keyword search cannot find: same meaning, different words ---
+async def test_merchant_gets_only_its_own_chunks(pool, sandbox, embedder):
+    results = await search(pool, embedder, ACME, "zebra unicorn rainbow", limit=50)
 
-@pytest.mark.parametrize("customer_wording", ["send it back", "my headphones broke", "money back"])
-async def test_keyword_search_misses_questions_that_use_other_words(pool, customer_wording):
-    # The policy says "returned", "damaged or defective" and "refund". This gap is what semantic search is for.
-    assert await titles(pool, ACME, customer_wording) == []
-
-
-# --- tenant isolation ---
-
-async def test_each_merchant_only_finds_its_own_policy(pool):
-    assert await titles(pool, GLOBEX, "14 days") == ["Return window"]
-    assert await titles(pool, ACME, "14 days") == []  # acme's window is 30 days
-
-
-async def test_a_merchant_never_sees_another_merchants_chunks(pool):
-    for merchant in (ACME, GLOBEX):
-        for chunk in await search_policy_keyword(pool, merchant, "refund OR return OR gift", limit=50):
-            owner = await owner_of(pool, chunk["title"], chunk["body"])
-            assert owner == merchant
-
-
-async def owner_of(pool, title: str, body: str) -> str:
-    async with pool.connection() as conn:
-        cur = await conn.execute("SELECT merchant_id FROM policy_chunks WHERE title = %s AND body = %s", (title, body))
-        return (await cur.fetchone())["merchant_id"]
-
-
-# --- text from a model can be anything ---
-
-@pytest.mark.parametrize(
-    "odd_text",
-    ["", "   ", "!!!", '"unbalanced quote', "'; DROP TABLE orders; --"],
-    ids=["empty", "blank", "punctuation", "open_quote", "sql_injection_attempt"],
-)
-async def test_odd_search_text_returns_nothing_instead_of_failing(pool, odd_text):
-    assert await search_policy_keyword(pool, ACME, odd_text) == []
+    assert all("zebra" not in r["body"] for r in results)  # the sandbox's chunk must not appear for acme

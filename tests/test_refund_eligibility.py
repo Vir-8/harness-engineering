@@ -1,17 +1,18 @@
 """check_refund_eligibility: the business rules, with no database.
 
 It returns a list of reasons the refund is NOT allowed. An empty list means it is allowed.
-Every test starts from a normal order (delivered, $59.00, asked about 3 days after delivery)
+Every case starts from a normal order (delivered, $59.00, asked about 3 days after delivery)
 and changes only the one thing it is about.
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
+import pytest
 from helpers import A100_TOTAL_CENTS, DAY
 
 from refund_harness.data.repository import check_refund_eligibility
 
-DELIVERED = datetime(2026, 10, 15, tzinfo=timezone.utc)
+DELIVERED = datetime(2026, 10, 15, tzinfo=UTC)
 
 
 def rejections_for(after_delivery: timedelta = 3 * DAY, amount_cents: int = A100_TOTAL_CENTS, **order_changes) -> list[str]:
@@ -20,48 +21,36 @@ def rejections_for(after_delivery: timedelta = 3 * DAY, amount_cents: int = A100
     return check_refund_eligibility(order, amount_cents, now=DELIVERED + after_delivery)
 
 
-def mentions(rejections: list[str], fragment: str) -> bool:
-    return any(fragment in reason for reason in rejections)
+@pytest.mark.parametrize(
+    "change",
+    [
+        {},
+        {"amount_cents": 100},
+        {"after_delivery": 30 * DAY + timedelta(hours=5)},  # the rule counts whole days: 30 days 5 hours is "30 days"
+    ],
+    ids=["full_refund_soon_after_delivery", "partial_refund", "30_days_and_5_hours_still_counts"],
+)
+def test_these_refunds_are_allowed(change):
+    assert rejections_for(**change) == []
 
 
-# --- allowed ---
+@pytest.mark.parametrize(
+    ("change", "reason"),
+    [
+        ({"amount_cents": A100_TOTAL_CENTS + 1}, "Cannot refund more"),
+        ({"after_delivery": 31 * DAY}, "over 30 days"),
+        # An order on its way has no delivery date either; it once got "Delivery date not found" as a second reason.
+        ({"status": "shipped", "delivered_at": None}, "has not been delivered"),
+        ({"delivered_at": None}, "Delivery date not found"),  # delivered, but the date is missing: no crash
+        ({"after_delivery": -1 * DAY}, "Invalid order date"),  # delivered in the future
+    ],
+    ids=["above_the_order_total", "31_days_after_delivery", "still_on_its_way", "no_delivery_date", "delivery_date_in_the_future"],
+)
+def test_each_problem_gives_exactly_one_reason(change, reason):
+    [only_reason] = rejections_for(**change)
 
-def test_full_refund_shortly_after_delivery_is_allowed():
-    assert rejections_for() == []
+    assert reason in only_reason
 
-
-def test_partial_refund_is_allowed():
-    assert rejections_for(amount_cents=100) == []
-
-
-def test_30_days_and_5_hours_after_delivery_still_counts_as_within_30_days():
-    # the rule counts whole days: 30 days 5 hours is "30 days"
-    assert rejections_for(after_delivery=30 * DAY + timedelta(hours=5)) == []
-
-
-# --- rejected, one reason each ---
-
-def test_refund_above_the_order_total_is_rejected():
-    assert mentions(rejections_for(amount_cents=A100_TOTAL_CENTS + 1), "Cannot refund more")
-
-
-def test_31_days_after_delivery_is_too_late():
-    assert mentions(rejections_for(after_delivery=31 * DAY), "over 30 days")
-
-
-def test_order_that_has_not_been_delivered_is_rejected():
-    assert mentions(rejections_for(status="shipped", delivered_at=None), "has not been delivered")
-
-
-def test_delivered_order_with_no_delivery_date_is_rejected_without_crashing():
-    assert mentions(rejections_for(delivered_at=None), "Order date not found")
-
-
-def test_delivery_date_in_the_future_is_rejected():
-    assert mentions(rejections_for(after_delivery=-1 * DAY), "Invalid order date")
-
-
-# --- several problems ---
 
 def test_every_problem_is_reported_at_once():
     rejections = rejections_for(status="shipped", amount_cents=A100_TOTAL_CENTS + 1, after_delivery=31 * DAY)

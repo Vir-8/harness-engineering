@@ -10,16 +10,16 @@ import subprocess
 import time
 from collections.abc import Callable
 from datetime import datetime, timedelta
-from pathlib import Path
 
 from opentelemetry import trace
 from psycopg_pool import AsyncConnectionPool
 
 from refund_harness.agent.errors import ModelError
 from refund_harness.agent.llm import LLMClient
-from refund_harness.agent.loop import MAX_STEPS, run_agent
-from refund_harness.agent.types import LLMResponse, Message, ToolSpec
+from refund_harness.agent.loop import run_agent
+from refund_harness.agent.types import LLMResponse, Message, Step, ToolSpec
 from refund_harness.data.repository import get_order_row, search_policy_by_vector
+from refund_harness.evals import REPO_ROOT
 from refund_harness.evals.cases import EvalCase
 from refund_harness.evals.judge import Judge
 from refund_harness.evals.results import CaseRun, Retrieval, ToolRun
@@ -31,7 +31,6 @@ tracer = trace.get_tracer("evals")
 
 EVAL_CLOCK_OFFSET = timedelta(days=4)  # eval "now" = when acme's order A100 was delivered, plus this
 RETRIEVAL_DEPTH = 3
-REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 async def eval_now(pool: AsyncConnectionPool) -> datetime:
@@ -66,19 +65,12 @@ async def refund_amounts(pool: AsyncConnectionPool) -> list[int]:
         return [row["amount_cents"] for row in await cur.fetchall()]
 
 
-def tool_runs(messages: list[Message]) -> list[ToolRun]:
-    """Every tool call the model made, paired with what came back."""
-    outputs = {m.tool_call_id: m.content for m in messages if m.role == "tool"}
+def tool_runs(steps: list[Step]) -> list[ToolRun]:
+    """Every tool call the model made, with what came back, in order."""
     return [
-        ToolRun(
-            name=call.name,
-            arguments=call.arguments,
-            output=outputs.get(call.id, ""),
-            crashed=outputs.get(call.id, "").startswith("Tool crashed mid-run"),
-        )
-        for m in messages
-        if m.role == "assistant"
-        for call in m.tool_calls
+        ToolRun(name=step.name, arguments=step.arguments or {}, output=step.output, failed=step.failed)
+        for step in steps
+        if step.kind == "tool"
     ]
 
 
@@ -135,14 +127,14 @@ async def run_case(
                 span.set_attribute("eval.case_id", case.id)
                 span.set_attribute("eval.repeat", repeat)
                 span.set_attribute("eval.attempt", attempt)
-                result = await run_agent(recorder, registry, case.question, max_steps=MAX_STEPS)
-            run.answer, run.stop_reason, run.tools = result.final_text, result.stop_reason, tool_runs(result.messages)
+                result = await run_agent(recorder, registry, case.question)
+            run.answer, run.stop_reason, run.tools = result.final_text, result.stop_reason, tool_runs(result.steps)
             break
         except ModelError as error:
             run.error = f"{type(error).__name__}: {error}"
             if attempt > retries:
                 break
-        except Exception as error:  # one failed case must not end the whole run, and a bug is not retried
+        except Exception as error:  # noqa: BLE001 (one failed case must not end the whole run; a bug is not retried)
             run.error = f"{type(error).__name__}: {error}"
             break
     run.latency_s = time.perf_counter() - started
@@ -157,14 +149,14 @@ async def run_case(
 
     try:
         run.retrieval = await measure_retrieval(case, pool, embedder)
-    except Exception as error:
+    except Exception as error:  # noqa: BLE001 (a broken retrieval check is reported, not fatal)
         run.error = run.error or f"retrieval check failed: {type(error).__name__}: {error}"
 
     if judge is not None and run.error is None:
         try:
             run.judge, judge_usage = await judge.grade(case.question, run.tools, run.answer, registry.specs())
             run.judge_cost_usd = round((judge_usage.cost_usd or 0) if judge_usage else 0, 6)
-        except Exception as error:  # a broken judge call is reported, not counted as the agent failing
+        except Exception as error:  # noqa: BLE001 (a broken judge call is reported, not counted as the agent failing)
             run.judge_error = f"{type(error).__name__}: {error}"
 
     run.scores = score_run(case, run)

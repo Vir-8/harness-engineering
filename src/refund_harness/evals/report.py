@@ -3,9 +3,10 @@
 from collections import defaultdict
 from pathlib import Path
 
+from refund_harness.evals import EVALS_DIR
 from refund_harness.evals.results import CaseRun, RunReport
 
-RESULTS_DIR = Path(__file__).resolve().parents[3] / "evals" / "results"
+RESULTS_DIR = EVALS_DIR / "results"
 
 
 def pass_rate(runs: list[CaseRun]) -> float:

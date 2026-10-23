@@ -1,7 +1,9 @@
-"""The refund agent's tools, backed by order data from Postgres."""
+"""The refund agent's tools: order lookup, policy search and refund requests. The merchant is bound here, when the
+tools are built, never a tool argument the model could change."""
 
-from datetime import datetime, timezone
-from typing import Callable
+from collections.abc import Callable
+from datetime import UTC, datetime
+from typing import assert_never
 
 from neo4j import AsyncDriver
 from psycopg_pool import AsyncConnectionPool
@@ -19,8 +21,9 @@ from refund_harness.graph.risk import attach_risk_flags
 from refund_harness.retrieval.embedder import Embedder
 
 # Policy chunks farther than this (cosine distance) from the question are treated as "not about this".
-# Measured with scripts/compare_search.py on gemini-embedding-2 (768 dims): on-topic best matches were 0.20-0.39,
-# unrelated questions' best matches 0.42-0.45. The gap is thin and the sample was 8 questions: re-measure with real evals.
+# Measured on gemini-embedding-2 (768 dims): on-topic best matches were 0.20-0.39, unrelated questions' best matches
+# 0.42-0.45. The gap is thin (8 questions): re-measure whenever the embedding model, its dimensions or the policy text
+# change.
 MAX_POLICY_DISTANCE = 0.41
 POLICY_CHUNKS_SHOWN = 3
 
@@ -39,7 +42,7 @@ class SearchPolicyArgs(BaseModel):
 
 
 def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def build_registry(
@@ -85,7 +88,11 @@ def build_registry(
         ),
         Tool(
             "submit_order_refund",
-            "Submit a refund request for an order. This only REQUESTS the refund: it stays pending until a human approves it.",
+            "Submit a refund request for an order. This only REQUESTS the refund: it stays pending until a human approves it. "
+            "Any amount up to the order total can be requested, including part of it. Use the amount the customer asked "
+            "for; if it is not possible, explain why and ask, rather than submitting a different amount. Do not call it "
+            "when the order or the policy rules a refund out (for example the order has not arrived, or the return "
+            "window has passed): tell the customer why instead, even if they ask you to submit anyway.",
             RefundArgs,
             submit_order_refund,
         ),
@@ -116,12 +123,32 @@ def format_refund_result(order_id: str, amount_cents: int, result: SubmitRefundR
                 "and is pending human approval. No money has been refunded yet."
             )
         case RefundOutcome.DUPLICATE:
-            return f"A refund request for order {order_id} already exists, so no new request was created."
+            return _existing_request_text(order_id, result)
         case RefundOutcome.INELIGIBLE:
             reasons = "\n".join(f"- {r}" for r in result.reasons)
             return f"Order {order_id} is not eligible for this refund:\n{reasons}"
         case RefundOutcome.ORDER_NOT_FOUND:
             return order_not_found_text(order_id)
+        case _:
+            assert_never(result.outcome)
+
+
+def _existing_request_text(order_id: str, result: SubmitRefundResult) -> str:
+    # Says where the existing request stands: told only "it exists", the model guessed, and told a customer whose
+    # refund had been PAID that it was still waiting for review. The model echoes this text, so a state that is not paid
+    # never says the money was sent.
+    request = f"A refund request ({result.refund_id}) for order {order_id}" if result.refund_id else f"A refund request for order {order_id}"
+    match result.existing_status:
+        case "pending":
+            state = "already exists and is waiting for a human to review it. No money has been refunded yet."
+        case "approved":
+            state = "already exists. A person approved it and the payout is in progress."
+        case "issued":
+            amount = f" (${_dollars(result.existing_amount_cents)})" if result.existing_amount_cents is not None else ""
+            state = f"already exists and was paid out in full{amount}; the money went back to the customer."
+        case _:
+            state = "already exists."
+    return f"{request} {state} No new request was created."
 
 
 def _dollars(cents: int) -> str:
@@ -130,7 +157,6 @@ def _dollars(cents: int) -> str:
 
 
 def format_order(order_id: str, row: dict, now: datetime) -> str:
-    dollars, cents = divmod(row["total_cents"], 100)
     delivered_at = row["delivered_at"]
     if delivered_at is None:
         delivery = "not delivered yet"
@@ -140,6 +166,6 @@ def format_order(order_id: str, row: dict, now: datetime) -> str:
     return (
         f"Order {order_id}: {row['item']}\n"
         f"Status: {row['status']}\n"
-        f"Total: ${dollars}.{cents:02d}\n"
+        f"Total: ${_dollars(row['total_cents'])}\n"
         f"Delivered: {delivery}"
     )

@@ -16,25 +16,18 @@ Redis is optional at runtime: any failure is a cache miss, never an error for th
 import hashlib
 import logging
 from array import array
-from dataclasses import dataclass
 
 from opentelemetry import trace
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
 
+from refund_harness import metrics
 from refund_harness.retrieval.embedder import Document, Embedder
 
 log = logging.getLogger(__name__)
 
 NAMESPACE = "emb:v1"  # bump only if the stored FORMAT below changes
 DEFAULT_TTL_S = 24 * 60 * 60
-
-
-@dataclass
-class CacheStats:
-    hits: int = 0
-    misses: int = 0
-    errors: int = 0  # Redis failed or held something unusable: the caller was served without the cache
 
 
 class CachedEmbedder:
@@ -44,7 +37,6 @@ class CachedEmbedder:
         self._ttl_s = ttl_s
         self.dimensions = inner.dimensions
         self.identity = inner.identity
-        self.stats = CacheStats()
 
     def key(self, text: str) -> str:
         # The text is hashed, so a customer's question never sits in Redis as a readable key, and keys stay short.
@@ -54,12 +46,10 @@ class CachedEmbedder:
         key = self.key(text)
         cached = await self._read(key)
         if cached is not None:
-            self.stats.hits += 1
             self._note("hit")
             return cached
         vector = await self._inner.embed_query(text)  # a failure here propagates, and nothing is stored
         stored = await self._write(key, vector)
-        self.stats.misses += 1
         self._note("miss" if stored else "error")
         return vector
 
@@ -74,7 +64,7 @@ class CachedEmbedder:
             return None
         if raw is None:
             return None
-        if len(raw) != self.dimensions * 8:  # not what we wrote (a different format, a truncated value): treat as absent
+        if len(raw) != self.dimensions * array("d").itemsize:  # not what we wrote (a different format, a truncated value): treat as absent
             self._failed("read", ValueError(f"cached value has {len(raw)} bytes"))
             return None
         vector = array("d")
@@ -91,9 +81,9 @@ class CachedEmbedder:
         return True
 
     def _failed(self, action: str, error: Exception) -> None:
-        self.stats.errors += 1
         log.warning("embedding cache %s failed (%s: %s); continuing without it", action, type(error).__name__, error)
 
     @staticmethod
     def _note(outcome: str) -> None:
         trace.get_current_span().set_attribute("app.embedding_cache", outcome)  # shows in the trace tree
+        metrics.EMBEDDING_CACHE.labels(outcome).inc()  # and the hit rate over time, in Grafana

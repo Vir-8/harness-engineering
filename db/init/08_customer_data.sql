@@ -1,4 +1,4 @@
--- Customers, payment methods and addresses: the connections a graph is good at following (Phase 5).
+-- Customers, payment methods and addresses: the connections a graph is good at following (graph/sync.py).
 --
 -- Same tenant pattern as orders: every primary key includes merchant_id, and every foreign key carries merchant_id
 -- too, so a row can never point at another merchant's row. All in one transaction: either every change applies, or none.
@@ -47,8 +47,8 @@ ALTER TABLE orders
     ADD FOREIGN KEY (merchant_id, payment_method_id)   REFERENCES payment_methods (merchant_id, id),
     ADD FOREIGN KEY (merchant_id, shipping_address_id) REFERENCES addresses (merchant_id, id);
 
--- Postgres does not index foreign-key columns by itself. The graph sync scans orders, and the SQL-versus-graph
--- comparison later needs these to be a fair fight.
+-- Postgres does not index foreign-key columns by itself. The graph sync scans orders, and graph/bench.py's SQL
+-- engines need these for a fair comparison with the graph.
 CREATE INDEX orders_customer_idx       ON orders (merchant_id, customer_id);
 CREATE INDEX orders_payment_method_idx ON orders (merchant_id, payment_method_id);
 CREATE INDEX orders_address_idx        ON orders (merchant_id, shipping_address_id);

@@ -17,9 +17,13 @@ async def embed_missing_chunks(pool: AsyncConnectionPool, embedder: Embedder, me
     """
     async with pool.connection() as conn:
         cur = await conn.execute(
-            "SELECT id, title, body FROM policy_chunks "
-            "WHERE embedding IS NULL AND (%s::text IS NULL OR merchant_id = %s) ORDER BY id",
-            (merchant_id, merchant_id),
+            """
+            SELECT id, title, body
+            FROM policy_chunks
+            WHERE embedding IS NULL AND (%(merchant)s::text IS NULL OR merchant_id = %(merchant)s)
+            ORDER BY id
+            """,
+            {"merchant": merchant_id},
         )
         chunks = await cur.fetchall()
     if not chunks:
@@ -28,11 +32,10 @@ async def embed_missing_chunks(pool: AsyncConnectionPool, embedder: Embedder, me
     # The network call happens here, with no database connection held: a slow API must not tie up the pool.
     vectors = await embedder.embed_documents([Document(text=c["body"], title=c["title"]) for c in chunks])
 
-    async with pool.connection() as conn:
-        async with conn.transaction():  # all vectors are stored, or none
-            for chunk, vector in zip(chunks, vectors, strict=True):
-                await conn.execute(
-                    "UPDATE policy_chunks SET embedding = %s::vector WHERE id = %s",
-                    (to_vector_literal(vector), chunk["id"]),
-                )
+    async with pool.connection() as conn, conn.transaction():  # all vectors are stored, or none
+        for chunk, vector in zip(chunks, vectors, strict=True):
+            await conn.execute(
+                "UPDATE policy_chunks SET embedding = %s::vector WHERE id = %s",
+                (to_vector_literal(vector), chunk["id"]),
+            )
     return len(chunks)

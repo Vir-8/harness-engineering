@@ -72,8 +72,12 @@ class LiveEval:
         self.cases = {case.id: case for case in cases}
         self.results: dict[str, CaseRun] = {}
         self.now: datetime | None = None
-        self._make_llm, self._make_embedder, self._judge, self._retries = make_llm, make_embedder, judge, retries
-        self._make_pool, self._on_result = make_pool, on_result
+        self._make_llm = make_llm
+        self._make_embedder = make_embedder
+        self._judge = judge
+        self._retries = retries
+        self._make_pool = make_pool
+        self._on_result = on_result
         self._pool: AsyncConnectionPool | None = None
         self._lock: asyncio.Lock | None = None
         self._llm = self._embedder = None
@@ -105,12 +109,20 @@ class LiveEval:
         return evaluations_for(run) if run else []
 
     def run_evaluators(self) -> list[Callable[..., Evaluation]]:
-        runs = lambda: list(self.results.values())  # noqa: E731
-        return [
-            lambda **kw: Evaluation(name="pass_rate", value=sum(r.passed for r in runs()) / max(len(runs()), 1)),
-            lambda **kw: Evaluation(name="mean_latency_s", value=round(sum(r.latency_s for r in runs()) / max(len(runs()), 1), 2)),
-            lambda **kw: Evaluation(name="total_cost_usd", value=round(sum(r.cost_usd for r in runs()), 4)),
-        ]
+        """The whole experiment's totals, computed after the last case (so they read self.results only when called)."""
+
+        def pass_rate(**_: Any) -> Evaluation:
+            runs = list(self.results.values())
+            return Evaluation(name="pass_rate", value=sum(r.passed for r in runs) / max(len(runs), 1))
+
+        def mean_latency(**_: Any) -> Evaluation:
+            runs = list(self.results.values())
+            return Evaluation(name="mean_latency_s", value=round(sum(r.latency_s for r in runs) / max(len(runs), 1), 2))
+
+        def total_cost(**_: Any) -> Evaluation:
+            return Evaluation(name="total_cost_usd", value=round(sum(r.cost_usd for r in self.results.values()), 4))
+
+        return [pass_rate, mean_latency, total_cost]
 
 
 def run_in_langfuse(

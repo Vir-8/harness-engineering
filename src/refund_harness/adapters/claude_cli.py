@@ -30,16 +30,13 @@ REPLY_SCHEMA = {
 }
 
 
-# `claude -p` normally loads all of Claude Code around our prompt: its settings and memory files, skills, and every
-# configured MCP server's tool list. None of that is wanted, and dropping it cuts a one-word reply from 34,927 input
-# tokens ($0.12) to about 2,000.
+# `claude -p` normally loads all of Claude Code around our prompt: settings and memory files, skills, and every
+# configured MCP server's tools (a one-word reply was 34,927 input tokens, $0.12). These flags drop all that, for about
+# a third of the cost.
 #
-# What must NOT be dropped is Claude Code's own system prompt. An earlier version replaced it (--system-prompt) and
-# the evals showed why that is a mistake: this adapter gets structured replies through the CLI's structured-output
-# mechanism, and the default prompt is what teaches the model to use it. With a replacement prompt Sonnet 5.5 often
-# did not (the CLI gave up in 3 of 8 trials, and the model forgot to make its tool call in 5 of 8). With the default
-# prompt kept: 1 give-up in 16 trials and the tool call made 15 times, at about a third of the cost of loading
-# everything. Measured by running the same prompts repeatedly, not by reading the output of one.
+# Claude Code's own system prompt must stay: it teaches the model the CLI's structured-output mechanism. Replacing it
+# (--system-prompt) made Sonnet 5.5 skip its tool call in 5 of 8 eval trials, and the CLI gave up in 3; with it kept,
+# the call was made in 15 of 16.
 LEAN_CONTEXT_FLAGS = [
     "--strict-mcp-config",  # no MCP servers (none are passed in, so none load)
     "--setting-sources", "",  # no user/project settings or memory files
@@ -57,59 +54,55 @@ STRUCTURED_OUTPUT_GAVE_UP = "error_max_structured_output_retries"
 DEFAULT_MODEL = "claude-sonnet-5-5"
 
 
+def _structured_output(raw_stdout: str) -> tuple[dict, dict]:
+    """The CLI's JSON envelope, and the object the model produced inside it."""
+    envelope = json.loads(raw_stdout)
+    structured = envelope["structured_output"]
+    if not isinstance(structured, dict):
+        raise TypeError("structured_output is not an object")
+    return envelope, structured
+
+
 def _plain_model_name(name: str) -> str:
     """The CLI reports e.g. 'claude-opus-4-6[1m]' (the [1m] is the context-window variant); price lookups want the base name."""
     return re.sub(r"\[[^\]]*\]$", "", name)
 
 
 class ClaudeCLIClient:
-    def __init__(self, model: str = DEFAULT_MODEL, lean_context: bool = True, max_attempts: int = 2):
+    def __init__(self, model: str = DEFAULT_MODEL, max_attempts: int = 2, timeout_s: float = 120):
         self.model = model
-        self.lean_context = lean_context  # False keeps all of Claude Code's own context: only for comparing the two
         self.max_attempts = max_attempts  # tries per call when the CLI gives up on structured output
+        self.timeout_s = timeout_s
 
     async def complete(self, messages: list[Message], tools: list[ToolSpec]) -> LLMResponse:
-        prompt = self.build_prompt(messages, tools)
-        raw_output = await self._run_reliably(prompt, REPLY_SCHEMA)
-
-        output = self.parse_reply(raw_output)
-        return output
+        return self.parse_reply(await self._run_reliably(self.build_prompt(messages, tools), REPLY_SCHEMA))
 
     async def complete_structured(self, prompt: str, schema: dict) -> tuple[dict, Usage | None]:
         """One prompt in, one JSON object out (matching `schema`), plus what the call cost. For callers that are not
         the agent loop, such as the eval judge: no tools, no message history."""
         raw_output = await self._run_reliably(prompt, schema)
         try:
-            envelope = json.loads(raw_output)
-            structured = envelope["structured_output"]
-            if not isinstance(structured, dict):
-                raise TypeError("structured_output is not an object")
+            envelope, structured = _structured_output(raw_output)
         except (KeyError, JSONDecodeError, TypeError) as e:
             raise ReplyParseError("The model's reply was unusable") from e
         return structured, self.parse_usage(envelope)
 
     def build_prompt(self, messages: list[Message], tools: list[ToolSpec]) -> str:
-        history = json.dumps([m.model_dump() for m in messages], indent=2)
+        history = json.dumps([m.model_dump(exclude={"provider_items"}) for m in messages], indent=2)
         tools_prompt = json.dumps([t.model_dump() for t in tools])
-        prompt = f"Chat history: {history} \n Available tools are: {tools_prompt} \n To use a tool, put it in tool_calls. To give your final answer, put it in text and leave tool_calls empty."
-        return prompt
+        return (
+            f"Chat history: {history} \n Available tools are: {tools_prompt} \n "
+            "To use a tool, put it in tool_calls. To give your final answer, put it in text and leave tool_calls empty."
+        )
 
     def parse_reply(self, raw_stdout: str) -> LLMResponse:
         try:
-            json_object = json.loads(raw_stdout)
-            tool_calls_json: list[dict] = json_object["structured_output"]["tool_calls"]
-            tool_calls = [ToolCall(
-                **tool_call,
-                id = str(uuid.uuid4())
-            ) for tool_call in tool_calls_json]
-            response = LLMResponse(
-                text = json_object["structured_output"]["text"],
-                tool_calls = tool_calls,
-                usage = self.parse_usage(json_object),
-            )
+            envelope, reply = _structured_output(raw_stdout)
+            # The CLI's protocol has no call ids, so each call gets one: the loop pairs every tool result with its call.
+            tool_calls = [ToolCall(**call, id=str(uuid.uuid4())) for call in reply["tool_calls"]]
+            return LLMResponse(text=reply["text"], tool_calls=tool_calls, usage=self.parse_usage(envelope))
         except (KeyError, JSONDecodeError, ValidationError, TypeError) as e:
             raise ReplyParseError("The model's reply was unusable") from e
-        return response
 
     def parse_usage(self, envelope: dict) -> Usage | None:
         """The CLI reports uncached input, cache reads and cache writes separately; the standard wants one total.
@@ -153,10 +146,10 @@ class ClaudeCLIClient:
             "claude", "-p", "--output-format", "json", "--tools", "",
             "--json-schema", json.dumps(schema), "--no-session-persistence",
             "--model", self.model,
-            *(LEAN_CONTEXT_FLAGS if self.lean_context else []),
+            *LEAN_CONTEXT_FLAGS,
         ]
 
-    async def _run_claude(self, prompt: str, schema: dict, timeout: float = 120) -> str:
+    async def _run_claude(self, prompt: str, schema: dict) -> str:
         proc = await asyncio.create_subprocess_exec(
             *self._command(schema),
             stdin=asyncio.subprocess.PIPE,
@@ -165,11 +158,11 @@ class ClaudeCLIClient:
         )
 
         try:
-            out, err = await asyncio.wait_for(proc.communicate(prompt.encode()), timeout)
-        except asyncio.TimeoutError as e:
+            out, err = await asyncio.wait_for(proc.communicate(prompt.encode()), self.timeout_s)
+        except TimeoutError as e:
             proc.kill()
             await proc.wait()
-            raise ModelTimeoutError("The model took too long, please try again later.") from e
+            raise ModelTimeoutError(f"the claude CLI gave no answer within {self.timeout_s:g} s") from e
         if proc.returncode != 0:
             # `claude -p --output-format json` reports many failures as JSON on stdout and leaves stderr empty
             detail = err.decode().strip() or out.decode().strip() or "(it printed nothing)"
