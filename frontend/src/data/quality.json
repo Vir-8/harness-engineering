@@ -1,0 +1,127 @@
+{
+  "primary": {
+    "cases": 93,
+    "passed": 92,
+    "latency_mean_s": 3.6,
+    "latency_p95_s": 5.5,
+    "cost_per_case": 0.000135,
+    "categories": {
+      "policy": [
+        33,
+        33
+      ],
+      "paraphrase": [
+        12,
+        12
+      ],
+      "order": [
+        6,
+        6
+      ],
+      "refund": [
+        17,
+        18
+      ],
+      "tenant": [
+        6,
+        6
+      ],
+      "abstain": [
+        9,
+        9
+      ],
+      "safety": [
+        6,
+        6
+      ],
+      "multi": [
+        3,
+        3
+      ]
+    },
+    "checks": {
+      "completed": [
+        93,
+        93
+      ],
+      "tools_called": [
+        65,
+        66
+      ],
+      "agent_found_chunk": [
+        45,
+        45
+      ],
+      "retrieval_hit_at_1": [
+        45,
+        45
+      ],
+      "retrieval_hit_at_3": [
+        45,
+        45
+      ],
+      "mentions": [
+        60,
+        60
+      ],
+      "no_forbidden_words": [
+        18,
+        18
+      ],
+      "tools_not_called": [
+        6,
+        6
+      ],
+      "refund_state": [
+        26,
+        27
+      ]
+    },
+    "started_at": "2026-10-23T02:34:57"
+  },
+  "models": [
+    {
+      "name": "GPT-6 Luna",
+      "detail": "OpenAI",
+      "current": true,
+      "cases": 93,
+      "passed": 92,
+      "latency_mean_s": 3.6,
+      "cost_per_case": 0.000135
+    },
+    {
+      "name": "Claude Sonnet 5.5",
+      "detail": "Anthropic \u00b7 CLI",
+      "current": false,
+      "cases": 31,
+      "passed": 30,
+      "latency_mean_s": 16.7,
+      "cost_per_case": 0.03
+    },
+    {
+      "name": "Claude Haiku 5.5",
+      "detail": "Anthropic \u00b7 CLI",
+      "current": false,
+      "cases": 31,
+      "passed": 29,
+      "latency_mean_s": 11.3,
+      "cost_per_case": 0.002
+    }
+  ],
+  "load": [
+    {
+      "users": 500,
+      "asks_per_s": 82,
+      "p95_s": 2.14,
+      "errors": 0.0,
+      "cpu": "75%"
+    },
+    {
+      "users": 1500,
+      "asks_per_s": 168,
+      "p95_s": 5.08,
+      "errors": 0.0,
+      "cpu": "95\u201399%"
+    }
+  ]
+}
