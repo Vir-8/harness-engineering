@@ -121,7 +121,7 @@ function Flowchart({ selected, onSelect }: Select) {
 
       {node("console", 10, 158, 115, "Console", "customer's message")}
       {node("api", 175, 158, 110, "API", "FastAPI")}
-      {node("loop", 330, 158, 140, "Agent loop", "117 lines", 48, "model")}
+      {node("loop", 330, 158, 140, "Agent loop", "136 lines", 48, "model")}
       {node("tools", 500, 158, 124, "Tools", "3 functions", 48, "model")}
       {node("postgres", 330, 262, 140, "Postgres", "+ pgvector")}
       {node("redis", 500, 262, 124, "Redis", "cache · rate limit")}

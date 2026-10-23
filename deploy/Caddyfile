@@ -1,0 +1,7 @@
+# HTTPS in front of the API. Caddy gets the certificate for API_HOST from Let's Encrypt by itself (an sslip.io name,
+# which resolves to the server's IP, works without owning a domain).
+{$API_HOST} {
+	# Prometheus reads /metrics from inside the server; the public has no business there.
+	respond /metrics 404
+	reverse_proxy api:8000
+}

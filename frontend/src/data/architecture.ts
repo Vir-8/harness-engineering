@@ -21,7 +21,7 @@ export const PARTS: Part[] = [
   {
     id: "loop",
     name: "Agent loop",
-    tech: "Our own code, 117 lines",
+    tech: "Our own code, 136 lines",
     what: "Calls the model, runs the tools it asks for, and repeats, for at most 5 rounds. Unknown tools, bad arguments and tool crashes go back to the model as results. Every step is a trace span with its tokens and cost.",
     source: "src/refund_harness/agent/loop.py",
   },

@@ -13,3 +13,7 @@ monitoring
 db
 Dockerfile
 docker-compose.yml
+frontend
+deploy
+docker-compose.deploy.yml
+*.pem
